@@ -4,11 +4,12 @@ from getpass import getpass
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.prompt import Confirm, IntPrompt, Prompt
 
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
-from app.services.discovery import discover_checkmk_on_monitor, discover_host
+from app.services.discovery import discover_checkmk_on_monitor, discover_host, validate_affected_host
 from app.services.ssh import SSHExecutor
 
 app = typer.Typer(no_args_is_help=True)
@@ -33,6 +34,14 @@ def ask_environment() -> EnvironmentType:
     }[option]
 
 
+def show_value(title: str, value: str, ok_when_present: bool = True) -> None:
+    present = bool(value.strip())
+    marker = "[green]✓[/green]" if present == ok_when_present else "[yellow]![/yellow]"
+    console.print(f"{marker} [bold]{title}[/bold]")
+    if value.strip():
+        console.print(value.strip())
+
+
 @app.command()
 def run() -> None:
     settings = get_settings()
@@ -51,17 +60,26 @@ def run() -> None:
         password = getpass("Senha SSH: ")
 
     affected = SSHExecutor(affected_ip, port, username, password, settings.ssh_connect_timeout)
+    monitor = None
+    monitor_owned = False
+
     try:
         affected.connect()
         info = discover_host(affected, environment)
         console.print(f"\n✓ Hostname: {info.hostname}")
         console.print(f"✓ Sistema: {info.os_name}")
         console.print(f"✓ Ambiente: {environment.value}")
-        console.print("✓ Agente Checkmk identificado" if info.checkmk_agent_units else "! Unidade do agente Checkmk não identificada")
+
+        console.print("\n[bold cyan]Validações no host afetado[/bold cyan]")
+        validations = validate_affected_host(affected, environment)
+        show_value("Unidades ativas do agente", validations["service_status"])
+        show_value("Porta 6556 em escuta", validations["listener"])
+        show_value("Resposta local do agente Checkmk", validations["agent_output"])
+        show_value("Estado do sudo", validations["sudo_access"])
+        show_value("Firewall relacionado", validations["firewall"])
 
         same = Confirm.ask("O servidor de monitoramento está neste mesmo host?", default=False)
         monitor = affected
-        monitor_owned = False
         if not same:
             monitor_ip = Prompt.ask("IP VPN do servidor de monitoramento")
             monitor_port = IntPrompt.ask("Porta SSH do monitoramento", default=settings.ssh_default_port)
@@ -72,14 +90,32 @@ def run() -> None:
             monitor.connect()
             monitor_owned = True
 
-        discovery = discover_checkmk_on_monitor(monitor, environment)
-        console.print("\n[bold]Descoberta no servidor de monitoramento[/bold]")
-        console.print(discovery["containers"] or "Nenhum container Checkmk localizado.")
-        console.print("\nPróxima etapa: mapear site OMD, localizar o host no Checkmk e consultar os alertas ativos.")
+        discovery = discover_checkmk_on_monitor(monitor, environment, info.hostname)
+        console.print("\n[bold cyan]Validações no servidor de monitoramento[/bold cyan]")
+        show_value("Containers Checkmk", discovery["containers"])
 
-        if monitor_owned:
-            monitor.close()
+        if not discovery["details"]:
+            console.print("[yellow]! Não foi possível localizar sites OMD nos containers encontrados.[/yellow]")
+        else:
+            for detail in discovery["details"]:
+                console.print(
+                    Panel.fit(
+                        f"[bold]Container:[/bold] {detail['container']}\n"
+                        f"[bold]Site:[/bold] {detail['site']}\n\n"
+                        f"[bold]OMD status[/bold]\n{detail['omd_status'] or 'Sem retorno'}\n\n"
+                        f"[bold]Localização do host no Checkmk[/bold]\n{detail['host_check']}",
+                        title="Checkmk",
+                    )
+                )
+
+        console.print("\n[bold green]Validação inicial concluída.[/bold green]")
+        console.print(
+            "A próxima camada será consultar o estado atual dos serviços do host com cmk -vvn, "
+            "correlacionar o alerta e registrar o incidente no PostgreSQL."
+        )
     finally:
+        if monitor_owned and monitor is not None:
+            monitor.close()
         affected.close()
 
 
