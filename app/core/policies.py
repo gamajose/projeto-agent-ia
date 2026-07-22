@@ -14,9 +14,10 @@ class EnvironmentType(StrEnum):
 
 class ActionType(StrEnum):
     READ_ONLY = "read_only"
-    SERVICE_RESTART = "service_restart"
-    OMD_RESTART = "omd_restart"
-    CONTAINER_RESTART = "container_restart"
+    SERVICE_ADJUSTMENT = "service_adjustment"
+    OMD_ADJUSTMENT = "omd_adjustment"
+    CONTAINER_ADJUSTMENT = "container_adjustment"
+    DESTRUCTIVE = "destructive"
     HOST_REBOOT = "host_reboot"
     DATABASE_ACCESS = "database_access"
 
@@ -31,9 +32,16 @@ class PolicyDecision:
 
 REBOOT_RE = re.compile(r"(^|[;&|]\s*)(reboot|shutdown|poweroff|halt|init\s+6|systemctl\s+reboot)\b", re.I)
 DB_CLIENT_RE = re.compile(r"(^|[;&|]\s*)(sqlplus|rman|psql|mysql|mariadb|sqlcmd|mongosh?|redis-cli)\b", re.I)
-CONTAINER_RESTART_RE = re.compile(r"\bdocker\s+(restart|stop|kill)\b", re.I)
-OMD_RESTART_RE = re.compile(r"\bomd\s+(restart|stop)\b", re.I)
-SERVICE_RESTART_RE = re.compile(r"\b(systemctl|service)\s+(restart|stop)\b", re.I)
+DESTRUCTIVE_RE = re.compile(
+    r"(^|[;&|]\s*)(rm\s|rmdir\s|unlink\s|truncate\s|dd\s|mkfs\b|wipefs\b|"
+    r"systemctl\s+(stop|disable|mask)\b|service\s+\S+\s+stop\b|"
+    r"docker\s+(stop|kill|rm|rmi|prune)\b|omd\s+(stop|rm|remove)\b|"
+    r"dnf\s+remove\b|yum\s+remove\b|rpm\s+-e\b)",
+    re.I,
+)
+CONTAINER_ADJUST_RE = re.compile(r"\bdocker\s+(start|restart)\b", re.I)
+OMD_ADJUST_RE = re.compile(r"\bomd\s+(start|restart)\b", re.I)
+SERVICE_ADJUST_RE = re.compile(r"\b(systemctl\s+(start|restart|reload|enable)|service\s+\S+\s+(start|restart|reload))\b", re.I)
 
 
 def classify_command(command: str) -> ActionType:
@@ -41,31 +49,24 @@ def classify_command(command: str) -> ActionType:
         return ActionType.HOST_REBOOT
     if DB_CLIENT_RE.search(command):
         return ActionType.DATABASE_ACCESS
-    if CONTAINER_RESTART_RE.search(command):
-        return ActionType.CONTAINER_RESTART
-    if OMD_RESTART_RE.search(command):
-        return ActionType.OMD_RESTART
-    if SERVICE_RESTART_RE.search(command):
-        return ActionType.SERVICE_RESTART
+    if DESTRUCTIVE_RE.search(command):
+        return ActionType.DESTRUCTIVE
+    if CONTAINER_ADJUST_RE.search(command):
+        return ActionType.CONTAINER_ADJUSTMENT
+    if OMD_ADJUST_RE.search(command):
+        return ActionType.OMD_ADJUSTMENT
+    if SERVICE_ADJUST_RE.search(command):
+        return ActionType.SERVICE_ADJUSTMENT
     return ActionType.READ_ONLY
 
 
 def evaluate_action(action: ActionType, environment: EnvironmentType) -> PolicyDecision:
     if action == ActionType.DATABASE_ACCESS:
-        return PolicyDecision(False, False, "Acesso a banco de dados de cliente é proibido.", "CUSTOMER_DATABASE_ACCESS_DENIED")
-
+        return PolicyDecision(False, False, "Acesso a banco de dados do cliente é proibido.", "CUSTOMER_DATABASE_ACCESS_DENIED")
     if action == ActionType.HOST_REBOOT:
-        return PolicyDecision(
-            False,
-            False,
-            "Reboot proibido em produção, standby, monitoramento ou ambiente desconhecido.",
-            "HOST_REBOOT_DENIED",
-        )
-
-    if action in {ActionType.CONTAINER_RESTART, ActionType.OMD_RESTART}:
-        return PolicyDecision(True, True, "Ação com impacto operacional exige aprovação explícita.", "IMPACT_ACTION_APPROVAL_REQUIRED")
-
-    if action == ActionType.SERVICE_RESTART:
-        return PolicyDecision(True, True, "Restart de serviço exige aprovação explícita nesta primeira versão.", "SERVICE_RESTART_APPROVAL_REQUIRED")
-
+        return PolicyDecision(False, False, "Reboot é proibido em todos os ambientes.", "HOST_REBOOT_DENIED")
+    if action == ActionType.DESTRUCTIVE:
+        return PolicyDecision(False, True, "Remoção, parada, desinstalação ou exclusão exige autorização específica.", "DESTRUCTIVE_ACTION_DENIED")
+    if action in {ActionType.SERVICE_ADJUSTMENT, ActionType.CONTAINER_ADJUSTMENT, ActionType.OMD_ADJUSTMENT}:
+        return PolicyDecision(True, False, "Ajuste operacional autorizado para normalização do alerta.", "SAFE_ADJUSTMENT_ALLOWED")
     return PolicyDecision(True, False, "Comando somente leitura permitido.", "READ_ONLY_ALLOWED")
