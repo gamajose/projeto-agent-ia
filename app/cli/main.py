@@ -11,8 +11,13 @@ from app.core.settings import get_settings
 from app.services.discovery import discover_checkmk_on_monitor, discover_host
 from app.services.ssh import SSHExecutor
 
-app = typer.Typer(no_args_is_help=False)
+app = typer.Typer(no_args_is_help=True)
 console = Console()
+
+
+@app.callback()
+def main() -> None:
+    """Agent IA para troubleshooting seguro de ambientes Checkmk."""
 
 
 def ask_environment() -> EnvironmentType:
