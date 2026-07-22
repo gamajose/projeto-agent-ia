@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from google import genai
+
 from app.core.settings import get_settings
 
 SYSTEM_RULES = """
@@ -31,9 +32,69 @@ O resumo e o relatório devem ser claros, curtos e objetivos.
 """.strip()
 
 
-def _fallback(message: str) -> dict[str, Any]:
+def _deterministic_fallback(payload: dict[str, Any], message: str) -> dict[str, Any]:
+    findings = payload.get("checkmk", {}).get("findings", [])
+
+    for finding in findings:
+        if not finding.get("found"):
+            continue
+
+        container = str(finding.get("container") or "").strip()
+        site = str(finding.get("site") or "").strip()
+        omd_status = finding.get("omd_status", {})
+        status_text = (
+            str(omd_status.get("stdout") or "")
+            + "\n"
+            + str(omd_status.get("stderr") or "")
+        ).lower()
+
+        if container and site and "partially running" in status_text and "automation-helper" in status_text:
+            command = f"docker exec {container} omd start {site}"
+            validation_command = f"docker exec {container} omd status {site}"
+            return {
+                "summary": "O site OMD está parcialmente ativo porque o serviço automation-helper está parado.",
+                "classification": "new_behavior",
+                "probable_cause": "O automation-helper do site OMD não está em execução, mantendo o site parcialmente ativo e o healthcheck do container em estado unhealthy.",
+                "confidence": 95,
+                "evidence_used": [
+                    f"Site OMD {site} com estado partially running.",
+                    "Serviço automation-helper identificado como stopped.",
+                    "Healthcheck do container reportando unhealthy por falha no comando omd status.",
+                ],
+                "recommended_read_only_checks": [
+                    validation_command,
+                    f"docker exec {container} su - {site} -c 'tail -n 120 ~/var/log/automation-helper.log 2>/dev/null'",
+                ],
+                "remediation": [
+                    {
+                        "description": f"Iniciar os serviços parados do site OMD {site} sem reiniciar o container.",
+                        "command": command,
+                        "validation_command": validation_command,
+                        "failure_diagnostics": [
+                            validation_command,
+                            f"docker exec {container} su - {site} -c 'tail -n 120 ~/var/log/automation-helper.log 2>/dev/null'",
+                        ],
+                        "action_type": "omd_adjustment",
+                        "target": "monitor",
+                        "impact": "Baixo: inicia apenas serviços internos parados do site OMD; não reinicia o container.",
+                    }
+                ],
+                "validation_steps": [
+                    validation_command,
+                    "Executar novamente cmk -vvn para o host monitorado.",
+                    "Confirmar normalização dos serviços OMD e do healthcheck.",
+                ],
+                "ticket_report": (
+                    f"Identificamos que o site OMD {site} estava parcialmente ativo devido ao serviço "
+                    "automation-helper parado. Foi aplicada uma ação segura para iniciar os serviços internos "
+                    "pendentes do site, sem reiniciar o container, seguida de validação do estado do OMD e do monitoramento."
+                ),
+                "ai_error": message,
+                "analysis_source": "deterministic_fallback",
+            }
+
     return {
-        "summary": "A coleta foi concluída, mas a análise da IA ficou indisponível.",
+        "summary": "A coleta foi concluída, mas não foi possível concluir um diagnóstico automático seguro.",
         "classification": "inconclusive",
         "probable_cause": message,
         "confidence": 0,
@@ -41,15 +102,16 @@ def _fallback(message: str) -> dict[str, Any]:
         "recommended_read_only_checks": [],
         "remediation": [],
         "validation_steps": [],
-        "ticket_report": "Evidências coletadas e registradas. A análise automática da IA não foi concluída.",
+        "ticket_report": "Evidências coletadas e registradas. Não houve evidência suficiente para uma correção automática segura.",
         "ai_error": message,
+        "analysis_source": "deterministic_fallback",
     }
 
 
 def analyze_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
     settings = get_settings()
     if not settings.gemini_api_key:
-        return _fallback("GEMINI_API_KEY não configurada.")
+        return _deterministic_fallback(payload, "GEMINI_API_KEY não configurada.")
 
     client = genai.Client(api_key=settings.gemini_api_key)
     prompt = SYSTEM_RULES + "\n\nEVIDÊNCIAS:\n" + json.dumps(payload, ensure_ascii=False, default=str)
@@ -67,14 +129,11 @@ def analyze_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
             try:
                 result = json.loads(text)
                 result["ai_model"] = model
+                result["analysis_source"] = "gemini"
                 return result
             except json.JSONDecodeError:
-                return _fallback("O Gemini respondeu fora do formato JSON esperado.") | {
-                    "summary": text[:1000] or "Resposta vazia do Gemini.",
-                    "ticket_report": text[:4000],
-                    "ai_model": model,
-                }
+                last_error = "O Gemini respondeu fora do formato JSON esperado."
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
 
-    return _fallback(last_error or "Nenhum modelo Gemini disponível.")
+    return _deterministic_fallback(payload, last_error or "Nenhum modelo Gemini disponível.")
