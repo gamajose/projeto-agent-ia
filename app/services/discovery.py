@@ -26,8 +26,16 @@ def discover_host(executor: SSHExecutor, environment: EnvironmentType) -> HostDi
 
 
 def discover_checkmk_on_monitor(executor: SSHExecutor, environment: EnvironmentType) -> dict:
-    containers = executor.run(
-        "docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}' 2>/dev/null | grep -Ei 'checkmk|check-mk' || true",
-        environment,
-    ).stdout.strip()
-    return {"containers": containers}
+    command = "docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}' | grep -Ei 'checkmk|check-mk' || true"
+
+    result = executor.run(command, environment)
+    if result.exit_code != 0 or not result.stdout.strip():
+        sudo_result = executor.run_sudo(command, environment)
+        if sudo_result.stdout.strip():
+            result = sudo_result
+
+    return {
+        "containers": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+        "exit_code": result.exit_code,
+    }
