@@ -4,20 +4,26 @@ import json
 from typing import Any
 
 from google import genai
-
 from app.core.settings import get_settings
 
 SYSTEM_RULES = """
 Você é um analista AIOps de infraestrutura. Responda exclusivamente em JSON válido.
 Nunca sugira acesso a banco de dados do cliente. Nunca sugira reboot de host.
-Nunca sugira apagar, remover, desinstalar, matar ou parar serviços, containers, sites OMD, arquivos ou configurações.
-Você pode sugerir somente ajustes diretamente relacionados ao alerta: start, restart, reload, enable,
-correção de permissão/configuração não destrutiva e comandos Checkmk de diagnóstico/validação.
+Nunca sugira apagar, remover, desinstalar, matar, desabilitar ou mascarar serviços, containers, sites OMD, arquivos ou configurações.
+Você pode sugerir ajustes diretamente relacionados ao alerta: start, restart, reload, enable e também stop seguido imediatamente de start do mesmo recurso.
+Stop isolado é proibido. Quando usar stop/start, o comando deve estar no mesmo campo command e usar && para garantir sequência imediata.
+Exemplos permitidos:
+- systemctl stop SERVICO && systemctl start SERVICO
+- service SERVICO stop && service SERVICO start
+- docker stop CONTAINER && docker start CONTAINER
+- docker exec CONTAINER omd stop SITE && docker exec CONTAINER omd start SITE
+Toda ação deve conter validation_command apropriado para confirmar que o recurso subiu.
+Se a validação falhar, inclua failure_diagnostics com comandos somente leitura para descobrir o motivo e uma segunda correção segura, quando houver evidência suficiente.
 Use somente as evidências fornecidas. Quando não houver evidência suficiente, declare inconclusivo.
 Campos obrigatórios: summary, classification, probable_cause, confidence, evidence_used,
 recommended_read_only_checks, remediation, validation_steps, ticket_report.
 classification deve ser: identical_recurrence, similar_recurrence, new_behavior ou inconclusive.
-remediation deve conter objetos com description, command, action_type, target e impact.
+remediation deve conter objetos com description, command, validation_command, failure_diagnostics, action_type, target e impact.
 target deve ser affected ou monitor. action_type deve ser read_only, service_adjustment,
 container_adjustment, omd_adjustment ou config_adjustment.
 Comandos de remediation devem ser vazios quando não houver correção segura e diretamente relacionada.
@@ -68,7 +74,7 @@ def analyze_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
                     "ticket_report": text[:4000],
                     "ai_model": model,
                 }
-        except Exception as exc:  # a coleta nunca deve falhar por indisponibilidade do modelo
+        except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
 
     return _fallback(last_error or "Nenhum modelo Gemini disponível.")
