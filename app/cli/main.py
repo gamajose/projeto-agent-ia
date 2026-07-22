@@ -9,8 +9,8 @@ from rich.prompt import Confirm, IntPrompt, Prompt
 
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
-from app.services.discovery import discover_checkmk_on_monitor, discover_host, validate_affected_host
 from app.services.ssh import SSHExecutor
+from app.services.workflow import run_full_diagnosis
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -27,19 +27,16 @@ def ask_environment() -> EnvironmentType:
     console.print("2 - Standby")
     console.print("3 - Monitoramento")
     option = IntPrompt.ask("Escolha", choices=["1", "2", "3"])
-    return {
-        1: EnvironmentType.PRODUCTION,
-        2: EnvironmentType.STANDBY,
-        3: EnvironmentType.MONITORING,
-    }[option]
+    return {1: EnvironmentType.PRODUCTION, 2: EnvironmentType.STANDBY, 3: EnvironmentType.MONITORING}[option]
 
 
-def show_value(title: str, value: str, ok_when_present: bool = True) -> None:
-    present = bool(value.strip())
-    marker = "[green]✓[/green]" if present == ok_when_present else "[yellow]![/yellow]"
-    console.print(f"{marker} [bold]{title}[/bold]")
-    if value.strip():
-        console.print(value.strip())
+def _credentials(default_user: str, default_password: str | None, label: str = "") -> tuple[str, str]:
+    use_default = Confirm.ask(f"Usar credencial padrão do .env{label}?", default=True)
+    username = default_user if use_default else Prompt.ask(f"Usuário SSH{label}")
+    password = default_password if use_default else getpass(f"Senha temporária{label}: ")
+    if not password:
+        password = getpass(f"Senha SSH{label}: ")
+    return username, password
 
 
 @app.command()
@@ -48,73 +45,71 @@ def run() -> None:
     console.print("[bold]AGENT IA — TROUBLESHOOTING CHECKMK[/bold]")
     console.print("0 - Linux")
     console.print("1 - pfSense")
-    IntPrompt.ask("Tipo do host", choices=["0", "1"])
+    host_option = IntPrompt.ask("Tipo do host", choices=["0", "1"])
+    host_type = "linux" if host_option == 0 else "pfsense"
     affected_ip = Prompt.ask("IP VPN do host afetado")
-    port = IntPrompt.ask("Porta SSH", default=settings.ssh_default_port)
+    affected_port = IntPrompt.ask("Porta SSH", default=settings.ssh_default_port)
     environment = ask_environment()
+    username, password = _credentials(settings.ssh_default_user, settings.ssh_default_password)
 
-    use_default = Confirm.ask("Usar credencial padrão do .env?", default=True)
-    username = settings.ssh_default_user if use_default else Prompt.ask("Usuário SSH")
-    password = settings.ssh_default_password if use_default else getpass("Senha temporária: ")
-    if not password:
-        password = getpass("Senha SSH: ")
-
-    affected = SSHExecutor(affected_ip, port, username, password, settings.ssh_connect_timeout)
-    monitor = None
+    affected = SSHExecutor(affected_ip, affected_port, username, password, settings.ssh_connect_timeout)
+    monitor: SSHExecutor | None = None
     monitor_owned = False
-
     try:
+        console.print("\n[cyan]Conectando ao host afetado...[/cyan]")
         affected.connect()
-        info = discover_host(affected, environment)
-        console.print(f"\n✓ Hostname: {info.hostname}")
-        console.print(f"✓ Sistema: {info.os_name}")
-        console.print(f"✓ Ambiente: {environment.value}")
-
-        console.print("\n[bold cyan]Validações no host afetado[/bold cyan]")
-        validations = validate_affected_host(affected, environment)
-        show_value("Unidades ativas do agente", validations["service_status"])
-        show_value("Porta 6556 em escuta", validations["listener"])
-        show_value("Resposta local do agente Checkmk", validations["agent_output"])
-        show_value("Estado do sudo", validations["sudo_access"])
-        show_value("Firewall relacionado", validations["firewall"])
-
-        same = Confirm.ask("O servidor de monitoramento está neste mesmo host?", default=False)
+        same_server = Confirm.ask("O servidor de monitoramento está neste mesmo host?", default=False)
+        monitor_ip, monitor_port = affected_ip, affected_port
         monitor = affected
-        if not same:
+        if not same_server:
             monitor_ip = Prompt.ask("IP VPN do servidor de monitoramento")
             monitor_port = IntPrompt.ask("Porta SSH do monitoramento", default=settings.ssh_default_port)
-            monitor_use_default = Confirm.ask("Usar a mesma credencial?", default=True)
-            monitor_user = username if monitor_use_default else Prompt.ask("Usuário SSH do monitoramento")
-            monitor_password = password if monitor_use_default else getpass("Senha temporária do monitoramento: ")
+            same_credentials = Confirm.ask("Usar a mesma credencial?", default=True)
+            if same_credentials:
+                monitor_user, monitor_password = username, password
+            else:
+                monitor_user, monitor_password = _credentials(settings.ssh_default_user, settings.ssh_default_password, " do monitoramento")
             monitor = SSHExecutor(monitor_ip, monitor_port, monitor_user, monitor_password, settings.ssh_connect_timeout)
             monitor.connect()
             monitor_owned = True
 
-        discovery = discover_checkmk_on_monitor(monitor, environment, info.hostname)
-        console.print("\n[bold cyan]Validações no servidor de monitoramento[/bold cyan]")
-        show_value("Containers Checkmk", discovery["containers"])
-
-        if not discovery["details"]:
-            console.print("[yellow]! Não foi possível localizar sites OMD nos containers encontrados.[/yellow]")
-        else:
-            for detail in discovery["details"]:
-                console.print(
-                    Panel.fit(
-                        f"[bold]Container:[/bold] {detail['container']}\n"
-                        f"[bold]Site:[/bold] {detail['site']}\n\n"
-                        f"[bold]OMD status[/bold]\n{detail['omd_status'] or 'Sem retorno'}\n\n"
-                        f"[bold]Localização do host no Checkmk[/bold]\n{detail['host_check']}",
-                        title="Checkmk",
-                    )
-                )
-
-        console.print("\n[bold green]Validação inicial concluída.[/bold green]")
-        console.print(
-            "A próxima camada será consultar o estado atual dos serviços do host com cmk -vvn, "
-            "correlacionar o alerta e registrar o incidente no PostgreSQL."
+        console.print("[cyan]Coletando host, agente, rede, Docker, OMD, Checkmk, logs e histórico...[/cyan]")
+        result = run_full_diagnosis(
+            affected=affected,
+            monitor=monitor,
+            affected_ip=affected_ip,
+            affected_port=affected_port,
+            monitor_ip=monitor_ip,
+            monitor_port=monitor_port,
+            host_type=host_type,
+            environment=environment,
+            same_server=same_server,
         )
+        analysis = result["analysis"]
+        console.print("\n[bold green]Diagnóstico concluído[/bold green]")
+        console.print(f"Incidente: {result['incident_id']}")
+        console.print(f"Host: {result['hostname']}")
+        console.print(f"Container: {result['container'] or 'não localizado'}")
+        console.print(f"Site OMD: {result['site'] or 'não localizado'}")
+        console.print(f"Estado: {result['state']}")
+        console.print(f"Ocorrências anteriores: {result['recurrences']}")
+        console.print(Panel(str(analysis.get("summary", "Sem resumo")), title="Resumo Gemini"))
+        console.print(f"[bold]Classificação:[/bold] {analysis.get('classification', 'inconclusive')}")
+        console.print(f"[bold]Causa provável:[/bold] {analysis.get('probable_cause', 'inconclusiva')}")
+        console.print(f"[bold]Confiança:[/bold] {analysis.get('confidence', 0)}")
+        checks = analysis.get("recommended_read_only_checks") or []
+        if checks:
+            console.print("\n[bold]Verificações adicionais sugeridas:[/bold]")
+            for check in checks:
+                console.print(f" • {check}")
+        remediations = analysis.get("remediation") or []
+        if remediations:
+            console.print("\n[yellow]Ações sugeridas, não executadas automaticamente:[/yellow]")
+            for action in remediations:
+                console.print(f" • {action.get('description', '')}: {action.get('command', '')}")
+        console.print(Panel(str(analysis.get("ticket_report", "")), title="Relatório para ticket"))
     finally:
-        if monitor_owned and monitor is not None:
+        if monitor_owned and monitor:
             monitor.close()
         affected.close()
 
