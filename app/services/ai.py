@@ -6,6 +6,7 @@ from typing import Any
 from google import genai
 
 from app.core.settings import get_settings
+from app.services.checkmk_state import build_service_state_report
 
 SYSTEM_RULES = """
 Você é um analista AIOps de infraestrutura. Responda exclusivamente em JSON válido.
@@ -33,8 +34,12 @@ REGRAS DE RASTREABILIDADE OBRIGATÓRIAS:
 - Não repita a mesma causa com frases diferentes.
 - Diferencie claramente: fato observado, interpretação e ação executada.
 - Não diga que uma ação resolveu o problema sem uma validação posterior que demonstre mudança de estado.
-- Exit code 0 do cmk -vvn não significa que todos os serviços do host estão OK; analise o texto da saída e os estados dos serviços.
+- Exit code 0 do cmk -vvn não significa que todos os serviços do host estão OK.
+- Use obrigatoriamente o bloco service_state_report para identificar serviços antes e depois.
+- Respeite o campo resolution de service_state_report: resolved, partially_resolved, not_resolved ou inconclusive.
+- Se ainda houver itens em still_affected ou new_issues, nunca informe resolução completa.
 - Se o OMD estiver running mas um serviço monitorado continuar CRIT, trate como problema residual separado.
+- Cite nominalmente os serviços normalizados e os que permaneceram afetados.
 
 Campos obrigatórios: summary, classification, probable_cause, confidence, evidence_used,
 recommended_read_only_checks, remediation, validation_steps, ticket_report.
@@ -47,7 +52,17 @@ O resumo e o relatório devem ser claros, técnicos, detalhados e sem afirmaçõ
 """.strip()
 
 
-def _deterministic_fallback(payload: dict[str, Any], message: str) -> dict[str, Any]:
+def _attach_state_report(result: dict[str, Any], service_state_report: dict[str, Any]) -> dict[str, Any]:
+    result["service_state_report"] = service_state_report
+    result["resolution"] = service_state_report.get("resolution", "inconclusive")
+    return result
+
+
+def _deterministic_fallback(
+    payload: dict[str, Any],
+    message: str,
+    service_state_report: dict[str, Any],
+) -> dict[str, Any]:
     findings = payload.get("checkmk", {}).get("findings", [])
 
     for finding in findings:
@@ -68,8 +83,13 @@ def _deterministic_fallback(payload: dict[str, Any], message: str) -> dict[str, 
             command = f"docker exec {container} su - {site} -c 'omd start {service}'"
             validation_command = f"docker exec {container} su - {site} -c 'omd status {service}'"
             status_command = str(omd_status.get("command") or f"docker exec {container} omd status {site}")
-            return {
-                "summary": "O site OMD está parcialmente ativo porque o serviço automation-helper está parado.",
+            still_affected = service_state_report.get("still_affected") or []
+            residual_names = ", ".join(item.get("service", "") for item in still_affected) or "nenhum identificado"
+            result = {
+                "summary": (
+                    "O site OMD apresentou o automation-helper parado. A avaliação final deve considerar separadamente "
+                    f"os serviços monitorados residuais: {residual_names}."
+                ),
                 "classification": "new_behavior",
                 "probable_cause": (
                     f"Fato observado: o comando `{status_command}` retornou `automation-helper: stopped` "
@@ -109,13 +129,14 @@ def _deterministic_fallback(payload: dict[str, Any], message: str) -> dict[str, 
                     f"O comando `{status_command}` identificou o serviço automation-helper parado e o site OMD {site} "
                     "em estado parcialmente ativo. Foi executado o início somente desse serviço interno, sem reinício do "
                     "container. Em seguida foram executadas validações do serviço, do estado global do OMD e dos serviços "
-                    "monitorados, mantendo eventuais alertas residuais registrados separadamente."
+                    f"monitorados. Resultado de resolução: {service_state_report.get('resolution', 'inconclusive')}."
                 ),
                 "ai_error": message,
                 "analysis_source": "deterministic_fallback",
             }
+            return _attach_state_report(result, service_state_report)
 
-    return {
+    result = {
         "summary": "A coleta foi concluída, mas não foi possível concluir um diagnóstico automático seguro.",
         "classification": "inconclusive",
         "probable_cause": (
@@ -131,15 +152,24 @@ def _deterministic_fallback(payload: dict[str, Any], message: str) -> dict[str, 
         "ai_error": message,
         "analysis_source": "deterministic_fallback",
     }
+    return _attach_state_report(result, service_state_report)
 
 
 def analyze_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
+    service_state_report = build_service_state_report(payload)
+    enriched_payload = dict(payload)
+    enriched_payload["service_state_report"] = service_state_report
+
     settings = get_settings()
     if not settings.gemini_api_key:
-        return _deterministic_fallback(payload, "GEMINI_API_KEY não configurada.")
+        return _deterministic_fallback(
+            enriched_payload,
+            "GEMINI_API_KEY não configurada.",
+            service_state_report,
+        )
 
     client = genai.Client(api_key=settings.gemini_api_key)
-    prompt = SYSTEM_RULES + "\n\nEVIDÊNCIAS:\n" + json.dumps(payload, ensure_ascii=False, default=str)
+    prompt = SYSTEM_RULES + "\n\nEVIDÊNCIAS:\n" + json.dumps(enriched_payload, ensure_ascii=False, default=str)
     models = [settings.gemini_model, "gemini-3.6-flash", "gemini-3.5-flash"]
     last_error = ""
 
@@ -155,10 +185,14 @@ def analyze_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
                 result = json.loads(text)
                 result["ai_model"] = model
                 result["analysis_source"] = "gemini"
-                return result
+                return _attach_state_report(result, service_state_report)
             except json.JSONDecodeError:
                 last_error = "O Gemini respondeu fora do formato JSON esperado."
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
 
-    return _deterministic_fallback(payload, last_error or "Nenhum modelo Gemini disponível.")
+    return _deterministic_fallback(
+        enriched_payload,
+        last_error or "Nenhum modelo Gemini disponível.",
+        service_state_report,
+    )
