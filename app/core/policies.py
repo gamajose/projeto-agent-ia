@@ -9,7 +9,6 @@ class EnvironmentType(StrEnum):
     PRODUCTION = "production"
     STANDBY = "standby"
     MONITORING = "monitoring"
-    TRAINING = "training"
     UNKNOWN = "unknown"
 
 
@@ -56,9 +55,12 @@ def evaluate_action(action: ActionType, environment: EnvironmentType) -> PolicyD
         return PolicyDecision(False, False, "Acesso a banco de dados de cliente é proibido.", "CUSTOMER_DATABASE_ACCESS_DENIED")
 
     if action == ActionType.HOST_REBOOT:
-        if environment != EnvironmentType.TRAINING:
-            return PolicyDecision(False, False, "Reboot proibido em produção, standby, monitoramento ou ambiente desconhecido.", "HOST_REBOOT_DENIED")
-        return PolicyDecision(True, True, "Reboot permitido apenas em treinamento e com aprovação explícita.", "HOST_REBOOT_APPROVAL_REQUIRED")
+        return PolicyDecision(
+            False,
+            False,
+            "Reboot proibido em produção, standby, monitoramento ou ambiente desconhecido.",
+            "HOST_REBOOT_DENIED",
+        )
 
     if action in {ActionType.CONTAINER_RESTART, ActionType.OMD_RESTART}:
         return PolicyDecision(True, True, "Ação com impacto operacional exige aprovação explícita.", "IMPACT_ACTION_APPROVAL_REQUIRED")
