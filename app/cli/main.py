@@ -21,9 +21,36 @@ app = typer.Typer(no_args_is_help=True)
 console = Console()
 
 
-@app.callback()
-def main() -> None:
-    """Agent IA para troubleshooting seguro de infraestrutura."""
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    target: str | None = typer.Argument(None, help="IP, hostname, site OMD, container ou alias conhecido."),
+    context: list[str] | None = typer.Argument(None, help="Sintoma ou escopo em linguagem natural."),
+    environment: EnvironmentType = typer.Option(
+        EnvironmentType.UNKNOWN,
+        "--environment",
+        "-e",
+        help="Ambiente conhecido: production, standby, monitoring ou unknown.",
+    ),
+    ssh_port: int | None = typer.Option(None, "--port", "-p", help="Porta SSH para host novo."),
+    read_only: bool = typer.Option(False, "--read-only", help="Somente coleta e diagnóstico."),
+) -> None:
+    """Agent IA para troubleshooting seguro de infraestrutura.
+
+    Exemplos:
+      agent 172.27.225.31
+      agent bsi srv está lento
+      agent checkmk-bsi-25 docker
+      agent 172.27.225.31 interface de gerenciamento não comunica
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    if not target:
+        console.print(ctx.get_help())
+        raise typer.Exit(0)
+
+    free_text = " ".join(context or []).strip()
+    _run_auto(target, free_text, environment, ssh_port, read_only)
 
 
 def ask_environment() -> EnvironmentType:
@@ -32,7 +59,12 @@ def ask_environment() -> EnvironmentType:
     return {1: EnvironmentType.PRODUCTION, 2: EnvironmentType.STANDBY, 3: EnvironmentType.MONITORING}[option]
 
 
-def _credentials(default_user: str, default_password: str | None, label: str = "") -> tuple[str, str]:
+def _credentials(default_user: str, default_password: str | None, label: str = "", interactive: bool = True) -> tuple[str, str]:
+    if not interactive:
+        if not default_user or not default_password:
+            raise typer.BadParameter("Credencial SSH padrão não configurada no .env.")
+        return default_user, default_password
+
     use_default = Confirm.ask(f"Usar credencial do .env{label}?", default=True)
     username = default_user if use_default else Prompt.ask(f"Usuário SSH{label}")
     password = default_password if use_default else getpass(f"Senha{label}: ")
@@ -176,28 +208,77 @@ def _print_analysis(analysis: dict[str, Any]) -> None:
     console.print(Panel(str(analysis.get("ticket_report", "")), title="Texto para ticket"))
 
 
-def _resolve_host(reference: str, environment: EnvironmentType, default_port: int) -> tuple[str, int]:
-    saved = resolve_saved_target(reference, environment.value)
+def _infer_scope(context: str) -> str:
+    text = context.casefold()
+    filesystem_terms = ("filesystem", "file system", "disco", "partição", "particao", "inode", "espaço", "espaco", "raiz cheia")
+    if any(term in text for term in filesystem_terms):
+        return "filesystem"
+    return "checkmk"
+
+
+def _resolve_auto_target(reference: str, environment: EnvironmentType, default_port: int, ssh_port: int | None) -> tuple[dict[str, Any] | None, str, int, EnvironmentType]:
+    env_value = None if environment == EnvironmentType.UNKNOWN else environment.value
+    saved = resolve_saved_target(reference, env_value)
+    if saved:
+        saved_env = EnvironmentType(saved.get("environment") or EnvironmentType.UNKNOWN.value)
+        effective_env = environment if environment != EnvironmentType.UNKNOWN else saved_env
+        return saved, str(saved["vpn_ip"]), int(saved["ssh_port"]), effective_env
+    if _is_ip(reference):
+        return None, reference, int(ssh_port or default_port), environment
+    console.print(f"[red]Alvo '{reference}' não localizado no inventário. Para um host novo, informe o IP VPN.[/red]")
+    raise typer.Exit(2)
+
+
+def _run_auto(target: str, context: str, environment: EnvironmentType, ssh_port: int | None, read_only: bool) -> None:
+    settings = get_settings()
+    saved, ip, port, effective_env = _resolve_auto_target(target, environment, settings.ssh_default_port, ssh_port)
+    scope = _infer_scope(context)
+    host_type = str((saved or {}).get("host_type") or "linux")
+
+    console.print("[bold]AGENT IA — EXECUÇÃO AUTOMÁTICA[/bold]")
+    console.print(f"[cyan]Alvo:[/cyan] {target} → {ip}:{port}")
+    console.print(f"[cyan]Contexto:[/cyan] {context or 'descoberta e diagnóstico completos'}")
+    console.print(f"[cyan]Escopo inicial:[/cyan] {scope}")
+
+    if scope == "filesystem":
+        _run_filesystem(settings, host_type, target, effective_env, port=port, interactive=False)
+        return
+
+    _run_checkmk(
+        settings,
+        host_type,
+        target,
+        effective_env,
+        port=port,
+        interactive=False,
+        context=context,
+        read_only=read_only,
+    )
+
+
+def _resolve_host(reference: str, environment: EnvironmentType, default_port: int, port: int | None = None) -> tuple[str, int]:
+    env_value = None if environment == EnvironmentType.UNKNOWN else environment.value
+    saved = resolve_saved_target(reference, env_value)
     if saved and saved.get("source") == "host":
         console.print(f"[green]Host localizado no banco:[/green] {saved['vpn_ip']}:{saved['ssh_port']}")
         return str(saved["vpn_ip"]), int(saved["ssh_port"])
     if _is_ip(reference):
-        return reference, IntPrompt.ask("Porta SSH", default=default_port)
+        return reference, int(port or default_port)
     console.print(f"[red]Host '{reference}' não localizado. Use o IP VPN na primeira execução.[/red]")
     raise typer.Exit(2)
 
 
-def _run_filesystem(settings: Any, host_type: str, reference: str, environment: EnvironmentType) -> None:
-    ip, port = _resolve_host(reference, environment, settings.ssh_default_port)
-    mountpoint = Prompt.ask("Filesystem ou ponto de montagem", default="/").strip() or "/"
-    username, password = _credentials(settings.ssh_default_user, settings.ssh_default_password)
-    executor = SSHExecutor(ip, port, username, password, settings.ssh_connect_timeout)
+def _run_filesystem(settings: Any, host_type: str, reference: str, environment: EnvironmentType, *, port: int | None = None, interactive: bool = True) -> None:
+    ip, resolved_port = _resolve_host(reference, environment, settings.ssh_default_port, port)
+    mountpoint = Prompt.ask("Filesystem ou ponto de montagem", default="/").strip() or "/" if interactive else "/"
+    username, password = _credentials(settings.ssh_default_user, settings.ssh_default_password, interactive=interactive)
+    executor = SSHExecutor(ip, resolved_port, username, password, settings.ssh_connect_timeout)
     try:
-        console.print(f"\n[cyan]1/4 Conectando ao host {ip}:{port}...[/cyan]")
+        console.print(f"\n[cyan]1/4 Conectando ao host {ip}:{resolved_port}...[/cyan]")
         executor.connect()
         console.print(f"[cyan]2/4 Coletando evidências do filesystem {mountpoint}...[/cyan]")
         result = run_filesystem_diagnosis(
-            executor=executor, vpn_ip=ip, ssh_port=port, host_type=host_type,
+            executor=executor, vpn_ip=ip, ssh_port=resolved_port, host_type=host_type,
             environment=environment, mountpoint=mountpoint,
         )
         console.print("[cyan]3/4 Analisando evidências com IA...[/cyan]")
@@ -220,61 +301,71 @@ def _run_filesystem(settings: Any, host_type: str, reference: str, environment: 
         executor.close()
 
 
-def _run_checkmk(settings: Any, host_type: str, reference: str, environment: EnvironmentType) -> None:
-    saved = resolve_saved_target(reference, environment.value)
+def _run_checkmk(
+    settings: Any,
+    host_type: str,
+    reference: str,
+    environment: EnvironmentType,
+    *,
+    port: int | None = None,
+    interactive: bool = True,
+    context: str = "",
+    read_only: bool = False,
+) -> None:
+    env_value = None if environment == EnvironmentType.UNKNOWN else environment.value
+    saved = resolve_saved_target(reference, env_value)
     monitor_saved = saved if saved and saved.get("source") == "monitoring_mapping" else None
-    if environment == EnvironmentType.MONITORING and monitor_saved:
+
+    if monitor_saved:
         affected_ip, affected_port = str(monitor_saved["vpn_ip"]), int(monitor_saved["ssh_port"])
+        effective_environment = EnvironmentType.MONITORING
     elif saved and saved.get("source") == "host":
         affected_ip, affected_port = str(saved["vpn_ip"]), int(saved["ssh_port"])
+        effective_environment = environment
     elif _is_ip(reference):
-        affected_ip, affected_port = reference, IntPrompt.ask("Porta SSH", default=settings.ssh_default_port)
-    elif monitor_saved:
-        affected_reference = Prompt.ask("IP VPN ou hostname do host afetado").strip()
-        affected_ip, affected_port = _resolve_host(affected_reference, environment, settings.ssh_default_port)
+        affected_ip, affected_port = reference, int(port or settings.ssh_default_port)
+        effective_environment = environment
     else:
         console.print(f"[red]Site/host '{reference}' ainda não está cadastrado. Use o IP VPN na primeira execução.[/red]")
         raise typer.Exit(2)
 
-    username, password = _credentials(settings.ssh_default_user, settings.ssh_default_password)
+    username, password = _credentials(settings.ssh_default_user, settings.ssh_default_password, interactive=interactive)
     affected = SSHExecutor(affected_ip, affected_port, username, password, settings.ssh_connect_timeout)
     monitor: SSHExecutor | None = None
     monitor_owned = False
     try:
         console.print(f"\n[cyan]1/4 Conectando ao host {affected_ip}:{affected_port}...[/cyan]")
         affected.connect()
-        if environment == EnvironmentType.MONITORING:
-            same_server = True
-            monitor_ip, monitor_port, monitor = affected_ip, affected_port, affected
-        else:
+
+        same_server = True
+        monitor_ip, monitor_port, monitor = affected_ip, affected_port, affected
+        if interactive and effective_environment != EnvironmentType.MONITORING:
             same_server = Confirm.ask("O Checkmk está neste mesmo servidor?", default=False)
-            monitor_ip, monitor_port, monitor = affected_ip, affected_port, affected
             if not same_server:
-                if monitor_saved:
-                    monitor_ip, monitor_port = str(monitor_saved["vpn_ip"]), int(monitor_saved["ssh_port"])
+                monitor_reference = Prompt.ask("IP VPN ou site OMD do servidor Checkmk").strip()
+                resolved = resolve_saved_target(monitor_reference, EnvironmentType.MONITORING.value)
+                if resolved:
+                    monitor_ip, monitor_port = str(resolved["vpn_ip"]), int(resolved["ssh_port"])
+                elif _is_ip(monitor_reference):
+                    monitor_ip = monitor_reference
+                    monitor_port = settings.ssh_default_port
                 else:
-                    monitor_reference = Prompt.ask("IP VPN ou site OMD do servidor Checkmk").strip()
-                    resolved = resolve_saved_target(monitor_reference, EnvironmentType.MONITORING.value)
-                    if resolved:
-                        monitor_ip, monitor_port = str(resolved["vpn_ip"]), int(resolved["ssh_port"])
-                    elif _is_ip(monitor_reference):
-                        monitor_ip = monitor_reference
-                        monitor_port = IntPrompt.ask("Porta SSH do Checkmk", default=settings.ssh_default_port)
-                    else:
-                        raise typer.Exit(2)
-                monitor_user, monitor_password = (username, password)
-                if not Confirm.ask("Usar a mesma credencial?", default=True):
-                    monitor_user, monitor_password = _credentials(settings.ssh_default_user, settings.ssh_default_password, " do Checkmk")
+                    raise typer.Exit(2)
+                monitor_user, monitor_password = username, password
                 monitor = SSHExecutor(monitor_ip, monitor_port, monitor_user, monitor_password, settings.ssh_connect_timeout)
                 monitor.connect()
                 monitor_owned = True
 
         console.print("[cyan]2/4 Coletando evidências e estados de serviços...[/cyan]")
+        if context:
+            console.print(f"[cyan]Sintoma informado:[/cyan] {context}")
+        if read_only:
+            console.print("[yellow]Modo somente leitura solicitado. A execução de remediações depende de suporte do workflow.[/yellow]")
         console.print("[cyan]3/4 Analisando, aplicando ajustes seguros e validando...[/cyan]")
         result = run_full_diagnosis(
             affected=affected, monitor=monitor, affected_ip=affected_ip, affected_port=affected_port,
             monitor_ip=monitor_ip, monitor_port=monitor_port, host_type=host_type,
-            environment=environment, same_server=same_server,
+            environment=effective_environment, same_server=same_server,
         )
         console.print("[cyan]4/4 Organizando resultado detalhado...[/cyan]\n")
         analysis = result["analysis"]
@@ -303,6 +394,7 @@ def _run_checkmk(settings: Any, host_type: str, reference: str, environment: Env
 
 @app.command()
 def run() -> None:
+    """Fluxo guiado legado."""
     settings = get_settings()
     console.print("[bold]AGENT IA — INFRAESTRUTURA[/bold]")
     console.print("0 - Linux\n1 - pfSense")
