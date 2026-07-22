@@ -29,7 +29,7 @@ def _run(executor: SSHExecutor, command: str, environment: EnvironmentType, sudo
 def _run_with_sudo_fallback(executor: SSHExecutor, command: str, environment: EnvironmentType) -> dict[str, Any]:
     result = _run(executor, command, environment)
     combined = (result["stderr"] + result["stdout"]).lower()
-    denied = result["exit_code"] != 0 or any(
+    denied = any(
         token in combined
         for token in ("permission denied", "got permission denied", "access denied", "not permitted")
     )
@@ -156,18 +156,19 @@ def inspect_checkmk_host(
     for detail in monitor_data.get("container_details", []):
         container = detail["container"]["name"]
         qcontainer = shlex.quote(container)
-
         for site in _parse_sites(detail["sites"]["stdout"]):
             qsite = shlex.quote(site)
             cmk_d_inner = f"cmk -D {qhost}"
-            cmk_d_cmd = f"docker exec {qcontainer} su - {qsite} -c {shlex.quote(cmk_d_inner)} 2>&1"
-            cmk_d = _run_with_sudo_fallback(executor, cmk_d_cmd, environment)
+            cmk_d = _run_with_sudo_fallback(
+                executor,
+                f"docker exec {qcontainer} su - {qsite} -c {shlex.quote(cmk_d_inner)} 2>&1",
+                environment,
+            )
             found = (
                 cmk_d["exit_code"] == 0
                 and bool(cmk_d["stdout"].strip())
                 and "not found" not in cmk_d["stdout"].lower()
             )
-
             item: dict[str, Any] = {
                 "container": container,
                 "site": site,
@@ -179,40 +180,19 @@ def inspect_checkmk_host(
                 "cmk_D": cmk_d,
                 "found": found,
             }
-
             if found:
-                cmk_vvn_inner = f"cmk -vvn {qhost}"
-                agent_fetch_inner = f"cmk -d {qhost} | head -n 120"
-                nagios_inner = (
-                    f"grep -F ';{hostname};' ~/var/log/nagios.log "
-                    "2>/dev/null | tail -n 120"
-                )
-                site_logs_inner = (
-                    "tail -n 80 ~/var/log/automation-helper.log "
-                    "~/var/log/agent-receiver/error.log ~/var/log/web.log 2>/dev/null"
-                )
-
-                item["cmk_vvn"] = _run_with_sudo_fallback(
-                    executor,
-                    f"docker exec {qcontainer} su - {qsite} -c {shlex.quote(cmk_vvn_inner)} 2>&1",
-                    environment,
-                )
-                item["agent_fetch"] = _run_with_sudo_fallback(
-                    executor,
-                    f"docker exec {qcontainer} su - {qsite} -c {shlex.quote(agent_fetch_inner)} 2>&1",
-                    environment,
-                )
-                item["nagios_logs"] = _run_with_sudo_fallback(
-                    executor,
-                    f"docker exec {qcontainer} su - {qsite} -c {shlex.quote(nagios_inner)} 2>&1 || true",
-                    environment,
-                )
-                item["site_logs"] = _run_with_sudo_fallback(
-                    executor,
-                    f"docker exec {qcontainer} su - {qsite} -c {shlex.quote(site_logs_inner)} 2>&1 || true",
-                    environment,
-                )
-
+                commands = {
+                    "cmk_vvn": f"cmk -vvn {qhost}",
+                    "agent_fetch": f"cmk -d {qhost} | head -n 120",
+                    "nagios_logs": f"grep -F ';{hostname};' ~/var/log/nagios.log 2>/dev/null | tail -n 120",
+                    "site_logs": "tail -n 80 ~/var/log/automation-helper.log ~/var/log/agent-receiver/error.log ~/var/log/web.log 2>/dev/null",
+                }
+                for key, inner in commands.items():
+                    item[key] = _run_with_sudo_fallback(
+                        executor,
+                        f"docker exec {qcontainer} su - {qsite} -c {shlex.quote(inner)} 2>&1 || true",
+                        environment,
+                    )
             findings.append(item)
 
     return {"hostname": hostname, "findings": findings}
@@ -227,10 +207,20 @@ def _service_summary(checkmk_data: dict[str, Any]) -> tuple[str, str, str | None
     return "Host discovery", "UNKNOWN", None, "Host não localizado em nenhum site OMD descoberto."
 
 
+OMD_SERVICE_ACTION_RE = re.compile(
+    r"^docker\s+exec\s+([A-Za-z0-9_.-]+)\s+su\s+-\s+([A-Za-z0-9_-]+)\s+-c\s+"
+    r"'omd\s+(start|restart)\s+([A-Za-z0-9_.@:-]+)'$"
+)
+OMD_SERVICE_STATUS_RE = re.compile(
+    r"^docker\s+exec\s+([A-Za-z0-9_.-]+)\s+su\s+-\s+([A-Za-z0-9_-]+)\s+-c\s+"
+    r"'omd\s+status\s+([A-Za-z0-9_.@:-]+)'$"
+)
+
 SAFE_REMEDIATION_PATTERNS = [
     re.compile(r"^systemctl\s+(start|restart|reload|enable)\s+[A-Za-z0-9_.@:-]+$"),
     re.compile(r"^service\s+[A-Za-z0-9_.@:-]+\s+(start|restart|reload)$"),
     re.compile(r"^docker\s+exec\s+[A-Za-z0-9_.-]+\s+omd\s+(start|restart)\s+[A-Za-z0-9_-]+$"),
+    OMD_SERVICE_ACTION_RE,
     re.compile(r"^systemctl\s+stop\s+([A-Za-z0-9_.@:-]+)\s*&&\s*systemctl\s+start\s+\1$"),
     re.compile(r"^service\s+([A-Za-z0-9_.@:-]+)\s+stop\s*&&\s*service\s+\1\s+start$"),
     re.compile(
@@ -243,6 +233,7 @@ SAFE_VALIDATION_PATTERNS = [
     re.compile(r"^systemctl\s+(is-active|status)\s+[A-Za-z0-9_.@:-]+(?:\s+--no-pager)?$"),
     re.compile(r"^service\s+[A-Za-z0-9_.@:-]+\s+status$"),
     re.compile(r"^docker\s+exec\s+[A-Za-z0-9_.-]+\s+omd\s+status\s+[A-Za-z0-9_-]+$"),
+    OMD_SERVICE_STATUS_RE,
 ]
 
 
@@ -259,6 +250,11 @@ def _default_validation(command: str) -> str:
     if match:
         return f"service {match.group(1)} status"
 
+    match = OMD_SERVICE_ACTION_RE.fullmatch(command)
+    if match:
+        container, site, _, service = match.groups()
+        return f"docker exec {container} su - {site} -c 'omd status {service}'"
+
     match = re.search(
         r"docker\s+exec\s+([A-Za-z0-9_.-]+)\s+omd\s+(?:start|restart)\s+([A-Za-z0-9_-]+)$",
         command,
@@ -270,7 +266,6 @@ def _default_validation(command: str) -> str:
         )
     if match:
         return f"docker exec {match.group(1)} omd status {match.group(2)}"
-
     return ""
 
 
@@ -290,6 +285,16 @@ def _failure_diagnostics(command: str) -> list[str]:
             f"journalctl -u {unit} -n 120 --no-pager",
         ]
 
+    match = OMD_SERVICE_ACTION_RE.fullmatch(command)
+    if match:
+        container, site, _, service = match.groups()
+        log_name = service.replace("-", "-")
+        return [
+            f"docker exec {container} su - {site} -c 'omd status {service}'",
+            f"docker exec {container} su - {site} -c 'tail -n 150 ~/var/log/{log_name}.log 2>/dev/null'",
+            f"docker exec {container} su - {site} -c 'ps -ef | grep -F {service} | grep -v grep || true'",
+        ]
+
     match = re.search(
         r"docker\s+exec\s+([A-Za-z0-9_.-]+)\s+omd\s+(?:stop|start|restart)\s+([A-Za-z0-9_-]+)",
         command,
@@ -300,7 +305,6 @@ def _failure_diagnostics(command: str) -> list[str]:
             f"docker exec {container} omd status {site}",
             f"docker logs --tail 150 {container}",
         ]
-
     return []
 
 
@@ -311,7 +315,6 @@ def _execute_remediations(
     environment: EnvironmentType,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-
     for item in analysis.get("remediation") or []:
         command = str(item.get("command") or "").strip()
         target = str(item.get("target") or "affected").lower()
@@ -321,7 +324,6 @@ def _execute_remediations(
         action_type = classify_command(command)
         decision = evaluate_action(action_type, environment)
         safe_shape = any(pattern.fullmatch(command) for pattern in SAFE_REMEDIATION_PATTERNS)
-
         if not decision.allowed or decision.requires_approval or not safe_shape:
             results.append(
                 {
@@ -337,7 +339,6 @@ def _execute_remediations(
         executor = monitor if target == "monitor" else affected
         action_env = EnvironmentType.MONITORING if target == "monitor" else environment
         result = _run_with_sudo_fallback(executor, command, action_env)
-
         action_record: dict[str, Any] = {
             "description": item.get("description", ""),
             "command": command,
@@ -352,7 +353,6 @@ def _execute_remediations(
             if any(pattern.fullmatch(validation_command) for pattern in SAFE_VALIDATION_PATTERNS):
                 validation = _run_with_sudo_fallback(executor, validation_command, action_env)
                 action_record["validation"] = validation
-
                 if _validation_ok(validation):
                     action_record["status"] = "validated"
                 else:
@@ -364,9 +364,12 @@ def _execute_remediations(
             else:
                 action_record["status"] = "validation_blocked"
                 action_record["validation_reason"] = "Comando de validação fora da lista segura."
-
+        elif result["exit_code"] != 0:
+            action_record["failure_diagnostics"] = [
+                _run_with_sudo_fallback(executor, diagnostic_command, action_env)
+                for diagnostic_command in _failure_diagnostics(command)
+            ]
         results.append(action_record)
-
     return results
 
 
@@ -397,7 +400,6 @@ def run_full_diagnosis(
         environment=environment.value,
         internal_ips=affected_data["identity"]["ip_brief"].splitlines(),
     )
-
     monitor_row = affected_row if same_server else upsert_host(
         host_type="monitoring",
         vpn_ip=monitor_ip,
@@ -412,7 +414,6 @@ def run_full_diagnosis(
     found_item = next((item for item in checkmk_data["findings"] if item.get("found")), None)
     container_name = found_item.get("container") if found_item else None
     image = monitor_data["containers"][0]["image"] if monitor_data.get("containers") else None
-
     upsert_mapping(
         affected_host_id=affected_row.id,
         monitoring_host_id=monitor_row.id,
@@ -435,6 +436,7 @@ def run_full_diagnosis(
             "customer_database_access": "always_denied",
             "container_lifecycle": "always_denied",
             "safe_adjustments": "authorized",
+            "omd_service_start": "authorized_with_mandatory_validation",
             "paired_service_stop_start": "authorized_with_mandatory_validation",
             "delete_remove_disable": "specific_approval_required",
         },
@@ -444,7 +446,7 @@ def run_full_diagnosis(
     actions = _execute_remediations(analysis, affected, monitor, environment)
 
     validation: dict[str, Any] = {}
-    if any(item["status"] in {"executed", "validated", "validation_failed"} for item in actions):
+    if any(item["status"] in {"executed", "validated", "validation_failed", "failed"} for item in actions):
         validation["affected_host"] = collect_affected_host(affected, environment)
         refreshed_monitor = discover_monitor(monitor, EnvironmentType.MONITORING)
         validation["checkmk"] = inspect_checkmk_host(
@@ -459,7 +461,6 @@ def run_full_diagnosis(
 
     evidence["remediation_actions"] = actions
     evidence["post_validation"] = validation
-
     incident_id = save_incident(
         affected_host_id=affected_row.id,
         site_name=site_name,
@@ -470,7 +471,6 @@ def run_full_diagnosis(
         evidence=evidence,
         analysis=analysis,
     )
-
     return {
         "incident_id": incident_id,
         "hostname": hostname,
