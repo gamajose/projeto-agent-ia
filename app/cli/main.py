@@ -55,26 +55,52 @@ def run() -> None:
     try:
         console.print("\n[cyan]1/4 Conectando ao host...[/cyan]")
         affected.connect()
-        same_server = Confirm.ask("O Checkmk está neste mesmo servidor?", default=False)
-        monitor_ip, monitor_port = affected_ip, affected_port
-        monitor = affected
-        if not same_server:
-            monitor_ip = Prompt.ask("IP VPN do servidor Checkmk")
-            monitor_port = IntPrompt.ask("Porta SSH do Checkmk", default=settings.ssh_default_port)
-            if Confirm.ask("Usar a mesma credencial?", default=True):
-                monitor_user, monitor_password = username, password
-            else:
-                monitor_user, monitor_password = _credentials(settings.ssh_default_user, settings.ssh_default_password, " do Checkmk")
-            monitor = SSHExecutor(monitor_ip, monitor_port, monitor_user, monitor_password, settings.ssh_connect_timeout)
-            monitor.connect()
-            monitor_owned = True
+
+        # Ao escolher Monitoramento, o próprio host informado já é o servidor Checkmk.
+        # Para Produção ou Standby, ainda é necessário confirmar se o Checkmk está
+        # no mesmo servidor ou solicitar os dados do servidor de monitoramento.
+        if environment == EnvironmentType.MONITORING:
+            same_server = True
+            monitor_ip, monitor_port = affected_ip, affected_port
+            monitor = affected
+            console.print("[dim]Ambiente de monitoramento selecionado: utilizando este host como servidor Checkmk.[/dim]")
+        else:
+            same_server = Confirm.ask("O Checkmk está neste mesmo servidor?", default=False)
+            monitor_ip, monitor_port = affected_ip, affected_port
+            monitor = affected
+            if not same_server:
+                monitor_ip = Prompt.ask("IP VPN do servidor Checkmk")
+                monitor_port = IntPrompt.ask("Porta SSH do Checkmk", default=settings.ssh_default_port)
+                if Confirm.ask("Usar a mesma credencial?", default=True):
+                    monitor_user, monitor_password = username, password
+                else:
+                    monitor_user, monitor_password = _credentials(
+                        settings.ssh_default_user,
+                        settings.ssh_default_password,
+                        " do Checkmk",
+                    )
+                monitor = SSHExecutor(
+                    monitor_ip,
+                    monitor_port,
+                    monitor_user,
+                    monitor_password,
+                    settings.ssh_connect_timeout,
+                )
+                monitor.connect()
+                monitor_owned = True
 
         console.print("[cyan]2/4 Coletando evidências...[/cyan]")
         console.print("[cyan]3/4 Analisando e aplicando somente ajustes seguros...[/cyan]")
         result = run_full_diagnosis(
-            affected=affected, monitor=monitor, affected_ip=affected_ip, affected_port=affected_port,
-            monitor_ip=monitor_ip, monitor_port=monitor_port, host_type=host_type,
-            environment=environment, same_server=same_server,
+            affected=affected,
+            monitor=monitor,
+            affected_ip=affected_ip,
+            affected_port=affected_port,
+            monitor_ip=monitor_ip,
+            monitor_port=monitor_port,
+            host_type=host_type,
+            environment=environment,
+            same_server=same_server,
         )
         console.print("[cyan]4/4 Validando o resultado...[/cyan]\n")
 
@@ -102,8 +128,11 @@ def run() -> None:
             action_table.add_column("Alvo")
             action_table.add_column("Ação")
             for action in actions:
-                action_table.add_row(action.get("status", ""), action.get("target", ""),
-                                     action.get("description") or action.get("command", ""))
+                action_table.add_row(
+                    action.get("status", ""),
+                    action.get("target", ""),
+                    action.get("description") or action.get("command", ""),
+                )
             console.print(action_table)
         else:
             console.print("[yellow]Nenhum ajuste seguro foi necessário ou recomendado.[/yellow]")
