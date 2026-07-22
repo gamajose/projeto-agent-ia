@@ -13,14 +13,13 @@ Nunca sugira acesso a banco de dados do cliente. Nunca sugira reboot de host.
 Nunca sugira apagar, remover, desinstalar, matar, desabilitar ou mascarar serviços, containers, sites OMD, arquivos ou configurações.
 É proibido executar qualquer ação de ciclo de vida em containers: docker start, docker stop, docker restart, docker kill, docker rm, docker rmi ou prune.
 Containers podem ser apenas consultados com comandos somente leitura, como docker ps, docker inspect, docker logs e docker events.
+Você pode iniciar ou reiniciar serviços internos do site OMD sem reiniciar o container, executando o comando como usuário do site.
+Exemplo: docker exec CONTAINER su - SITE -c 'omd start SERVICO'.
+Para um serviço OMD parado, prefira iniciar somente o serviço afetado, e não o site inteiro.
 Você pode sugerir ajustes diretamente relacionados ao alerta apenas em serviços do sistema operacional e serviços internos do site OMD: start, restart, reload, enable e também stop seguido imediatamente de start do mesmo recurso.
 Stop isolado é proibido. Quando usar stop/start, o comando deve estar no mesmo campo command e usar && para garantir sequência imediata.
-Exemplos permitidos:
-- systemctl stop SERVICO && systemctl start SERVICO
-- service SERVICO stop && service SERVICO start
-- docker exec CONTAINER omd stop SITE && docker exec CONTAINER omd start SITE
 Toda ação deve conter validation_command apropriado para confirmar que o recurso subiu.
-Se a validação falhar, inclua failure_diagnostics com comandos somente leitura para descobrir o motivo e uma segunda correção segura, quando houver evidência suficiente.
+Se a ação falhar, colete status e logs do serviço antes de concluir o diagnóstico.
 Use somente as evidências fornecidas. Quando não houver evidência suficiente, declare inconclusivo.
 Campos obrigatórios: summary, classification, probable_cause, confidence, evidence_used,
 recommended_read_only_checks, remediation, validation_steps, ticket_report.
@@ -49,45 +48,46 @@ def _deterministic_fallback(payload: dict[str, Any], message: str) -> dict[str, 
         ).lower()
 
         if container and site and "partially running" in status_text and "automation-helper" in status_text:
-            command = f"docker exec {container} omd start {site}"
-            validation_command = f"docker exec {container} omd status {site}"
+            command = f"docker exec {container} su - {site} -c 'omd start automation-helper'"
+            validation_command = f"docker exec {container} su - {site} -c 'omd status automation-helper'"
+            log_command = (
+                f"docker exec {container} su - {site} -c "
+                "'tail -n 150 ~/var/log/automation-helper.log 2>/dev/null'"
+            )
             return {
                 "summary": "O site OMD está parcialmente ativo porque o serviço automation-helper está parado.",
-                "classification": "new_behavior",
+                "classification": "identical_recurrence",
                 "probable_cause": "O automation-helper do site OMD não está em execução, mantendo o site parcialmente ativo e o healthcheck do container em estado unhealthy.",
-                "confidence": 95,
+                "confidence": 98,
                 "evidence_used": [
                     f"Site OMD {site} com estado partially running.",
                     "Serviço automation-helper identificado como stopped.",
-                    "Healthcheck do container reportando unhealthy por falha no comando omd status.",
+                    "Healthcheck do container reportando unhealthy por falha no estado do site OMD.",
                 ],
                 "recommended_read_only_checks": [
                     validation_command,
-                    f"docker exec {container} su - {site} -c 'tail -n 120 ~/var/log/automation-helper.log 2>/dev/null'",
+                    log_command,
                 ],
                 "remediation": [
                     {
-                        "description": f"Iniciar os serviços parados do site OMD {site} sem reiniciar o container.",
+                        "description": f"Iniciar somente o serviço automation-helper do site OMD {site}, sem reiniciar o container.",
                         "command": command,
                         "validation_command": validation_command,
-                        "failure_diagnostics": [
-                            validation_command,
-                            f"docker exec {container} su - {site} -c 'tail -n 120 ~/var/log/automation-helper.log 2>/dev/null'",
-                        ],
+                        "failure_diagnostics": [validation_command, log_command],
                         "action_type": "omd_adjustment",
                         "target": "monitor",
-                        "impact": "Baixo: inicia apenas serviços internos parados do site OMD; não reinicia o container.",
+                        "impact": "Baixo: inicia apenas o automation-helper dentro do site OMD; não reinicia o container.",
                     }
                 ],
                 "validation_steps": [
                     validation_command,
-                    "Executar novamente cmk -vvn para o host monitorado.",
-                    "Confirmar normalização dos serviços OMD e do healthcheck.",
+                    f"docker exec {container} omd status {site}",
+                    "Executar novamente cmk -vvn para confirmar a normalização do monitoramento.",
                 ],
                 "ticket_report": (
                     f"Identificamos que o site OMD {site} estava parcialmente ativo devido ao serviço "
-                    "automation-helper parado. Foi aplicada uma ação segura para iniciar os serviços internos "
-                    "pendentes do site, sem reiniciar o container, seguida de validação do estado do OMD e do monitoramento."
+                    "automation-helper parado. Foi iniciado somente o serviço afetado dentro do site OMD, "
+                    "sem reiniciar o container, seguido da validação do serviço, do site e do monitoramento."
                 ),
                 "ai_error": message,
                 "analysis_source": "deterministic_fallback",
