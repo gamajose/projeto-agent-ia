@@ -25,13 +25,11 @@ def ask_environment() -> EnvironmentType:
     console.print("1 - Produção")
     console.print("2 - Standby")
     console.print("3 - Monitoramento")
-    console.print("4 - Treinamento")
-    option = IntPrompt.ask("Escolha", choices=["1", "2", "3", "4"])
+    option = IntPrompt.ask("Escolha", choices=["1", "2", "3"])
     return {
         1: EnvironmentType.PRODUCTION,
         2: EnvironmentType.STANDBY,
         3: EnvironmentType.MONITORING,
-        4: EnvironmentType.TRAINING,
     }[option]
 
 
