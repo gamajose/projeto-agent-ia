@@ -66,8 +66,9 @@ class SSHExecutor:
 
         self._validate(command, environment, approved)
         wrapped = f"sudo -S -p '' sh -lc {shlex.quote(command)}"
-        stdin, stdout, stderr = self.client.exec_command(wrapped, timeout=timeout, get_pty=True)
+        stdin, stdout, stderr = self.client.exec_command(wrapped, timeout=timeout, get_pty=False)
         stdin.write(self.password + "\n")
         stdin.flush()
+        stdin.channel.shutdown_write()
         exit_code = stdout.channel.recv_exit_status()
         return CommandResult(command, exit_code, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace"))
