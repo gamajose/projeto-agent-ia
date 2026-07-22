@@ -1,0 +1,27 @@
+policies:
+  database_access:
+    allowed: false
+    reason: "Nunca acessar banco de dados de cliente."
+
+  host_reboot:
+    production: deny
+    standby: deny
+    unknown: deny
+    training: require_explicit_approval
+
+  container_restart:
+    all_environments: require_explicit_approval
+
+  omd_restart:
+    all_environments: require_explicit_approval
+
+  service_restart:
+    all_environments: require_explicit_approval
+
+recurrence:
+  warning:
+    count: 2
+    window_days: 7
+  critical:
+    count: 4
+    window_days: 30
