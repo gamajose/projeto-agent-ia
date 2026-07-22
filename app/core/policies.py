@@ -8,6 +8,7 @@ from enum import StrEnum
 class EnvironmentType(StrEnum):
     PRODUCTION = "production"
     STANDBY = "standby"
+    MONITORING = "monitoring"
     TRAINING = "training"
     UNKNOWN = "unknown"
 
@@ -56,7 +57,7 @@ def evaluate_action(action: ActionType, environment: EnvironmentType) -> PolicyD
 
     if action == ActionType.HOST_REBOOT:
         if environment != EnvironmentType.TRAINING:
-            return PolicyDecision(False, False, "Reboot proibido em produção, standby ou ambiente desconhecido.", "HOST_REBOOT_DENIED")
+            return PolicyDecision(False, False, "Reboot proibido em produção, standby, monitoramento ou ambiente desconhecido.", "HOST_REBOOT_DENIED")
         return PolicyDecision(True, True, "Reboot permitido apenas em treinamento e com aprovação explícita.", "HOST_REBOOT_APPROVAL_REQUIRED")
 
     if action in {ActionType.CONTAINER_RESTART, ActionType.OMD_RESTART}:
