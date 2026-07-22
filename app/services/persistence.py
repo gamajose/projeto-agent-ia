@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.orm import aliased
 
 from app.db.base import SessionLocal
 from app.db.models import HostORM, IncidentORM, MonitoringMappingORM
@@ -49,6 +50,65 @@ def upsert_mapping(*, affected_host_id, monitoring_host_id, same_server: bool,
         mapping.checkmk_version = checkmk_version
         mapping.last_validated_at = datetime.now(timezone.utc)
         session.commit()
+
+
+def resolve_saved_target(reference: str, environment: str | None = None) -> dict[str, Any] | None:
+    """Resolve IP/porta já conhecidos usando IP, hostname, site OMD ou container.
+
+    Para uma referência de site, retorna o servidor de monitoramento vinculado ao
+    mapping. Para IP/hostname de host afetado, retorna o próprio host salvo.
+    """
+    value = reference.strip()
+    if not value:
+        return None
+
+    with SessionLocal() as session:
+        monitor_host = aliased(HostORM)
+        stmt = (
+            select(MonitoringMappingORM, monitor_host)
+            .join(monitor_host, monitor_host.id == MonitoringMappingORM.monitoring_host_id)
+            .where(
+                or_(
+                    MonitoringMappingORM.site_name.ilike(value),
+                    MonitoringMappingORM.container_name.ilike(value),
+                    MonitoringMappingORM.checkmk_hostname.ilike(value),
+                )
+            )
+            .order_by(MonitoringMappingORM.last_validated_at.desc())
+        )
+        row = session.execute(stmt).first()
+        if row:
+            mapping, host = row
+            return {
+                "vpn_ip": host.vpn_ip,
+                "ssh_port": host.ssh_port,
+                "host_type": host.host_type,
+                "hostname": host.hostname,
+                "environment": host.environment,
+                "site_name": mapping.site_name,
+                "container_name": mapping.container_name,
+                "source": "monitoring_mapping",
+            }
+
+        host_stmt = select(HostORM).where(
+            or_(HostORM.vpn_ip == value, HostORM.hostname.ilike(value))
+        )
+        if environment:
+            host_stmt = host_stmt.where(HostORM.environment == environment)
+        host_stmt = host_stmt.order_by(HostORM.last_seen_at.desc())
+        host = session.scalar(host_stmt)
+        if host:
+            return {
+                "vpn_ip": host.vpn_ip,
+                "ssh_port": host.ssh_port,
+                "host_type": host.host_type,
+                "hostname": host.hostname,
+                "environment": host.environment,
+                "site_name": None,
+                "container_name": None,
+                "source": "host",
+            }
+    return None
 
 
 def recurrence_history(*, checkmk_host: str, service_name: str, days: int = 30) -> list[dict[str, Any]]:
