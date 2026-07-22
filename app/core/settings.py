@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     checkmk_api_user: str | None = None
     checkmk_api_secret: str | None = None
     gemini_api_key: str | None = None
+    gemini_model: str = "gemini-3.5-flash"
 
     recurrence_warning_count: int = 2
     recurrence_warning_days: int = 7
