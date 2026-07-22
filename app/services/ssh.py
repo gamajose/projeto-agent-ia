@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import shlex
 
 import paramiko
 
@@ -42,10 +43,7 @@ class SSHExecutor:
         if self.client:
             self.client.close()
 
-    def run(self, command: str, environment: EnvironmentType, approved: bool = False, timeout: int = 60) -> CommandResult:
-        if not self.client:
-            raise RuntimeError("Conexão SSH não iniciada.")
-
+    def _validate(self, command: str, environment: EnvironmentType, approved: bool) -> None:
         action = classify_command(command)
         decision = evaluate_action(action, environment)
         if not decision.allowed:
@@ -53,6 +51,23 @@ class SSHExecutor:
         if decision.requires_approval and not approved:
             raise PermissionError(f"{decision.policy_code}: aprovação explícita necessária")
 
+    def run(self, command: str, environment: EnvironmentType, approved: bool = False, timeout: int = 60) -> CommandResult:
+        if not self.client:
+            raise RuntimeError("Conexão SSH não iniciada.")
+
+        self._validate(command, environment, approved)
         _, stdout, stderr = self.client.exec_command(command, timeout=timeout)
+        exit_code = stdout.channel.recv_exit_status()
+        return CommandResult(command, exit_code, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace"))
+
+    def run_sudo(self, command: str, environment: EnvironmentType, approved: bool = False, timeout: int = 60) -> CommandResult:
+        if not self.client:
+            raise RuntimeError("Conexão SSH não iniciada.")
+
+        self._validate(command, environment, approved)
+        wrapped = f"sudo -S -p '' sh -lc {shlex.quote(command)}"
+        stdin, stdout, stderr = self.client.exec_command(wrapped, timeout=timeout, get_pty=True)
+        stdin.write(self.password + "\n")
+        stdin.flush()
         exit_code = stdout.channel.recv_exit_status()
         return CommandResult(command, exit_code, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace"))
