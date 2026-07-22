@@ -6,7 +6,8 @@ from typing import Any
 from google import genai
 
 from app.core.settings import get_settings
-from app.services.checkmk_state import build_service_state_report
+from app.services.checkmk_playbooks import build_targeted_plan
+from app.services.checkmk_state import build_service_state_report, extract_services
 
 SYSTEM_RULES = """
 Você é um analista AIOps de infraestrutura. Responda exclusivamente em JSON válido.
@@ -16,34 +17,29 @@ Nunca sugira apagar, remover, desinstalar, matar, desabilitar ou mascarar servi�
 Containers podem ser apenas consultados com comandos somente leitura, como docker ps, docker inspect, docker logs e docker events.
 Você pode sugerir ajustes diretamente relacionados ao alerta apenas em serviços do sistema operacional e serviços internos do site OMD: start, restart, reload, enable e também stop seguido imediatamente de start do mesmo recurso.
 Stop isolado é proibido. Quando usar stop/start, o comando deve estar no mesmo campo command e usar && para garantir sequência imediata.
-Exemplos permitidos:
-- systemctl stop SERVICO && systemctl start SERVICO
-- service SERVICO stop && service SERVICO start
-- docker exec CONTAINER su - SITE -c 'omd start SERVICO'
-- docker exec CONTAINER su - SITE -c 'omd restart SERVICO'
-- docker exec CONTAINER omd stop SITE && docker exec CONTAINER omd start SITE
 Toda ação deve conter validation_command apropriado para confirmar que o recurso subiu.
-Se a validação falhar, inclua failure_diagnostics com comandos somente leitura para descobrir o motivo e uma segunda correção segura, quando houver evidência suficiente.
 Use somente as evidências fornecidas. Quando não houver evidência suficiente, declare inconclusivo.
 
 REGRAS DE RASTREABILIDADE OBRIGATÓRIAS:
 - Nunca declare falha de DNS apenas porque cmk -D, cmk -vvn ou cmk -d falhou.
-- Só declare falha de DNS quando existir um comando explícito de resolução, como getent hosts, host, dig ou nslookup, e a saída desse comando comprovar a falha.
+- Só declare falha de DNS quando existir um comando explícito de resolução, como getent hosts, host, dig ou nslookup, e a saída comprovar a falha.
 - Não confunda nome do host Checkmk com endereço usado para conexão SSH.
 - Para cada causa provável, informe qual comando produziu a evidência e qual trecho da saída sustenta a conclusão.
 - Não repita a mesma causa com frases diferentes.
-- Diferencie claramente: fato observado, interpretação e ação executada.
+- Diferencie claramente fatos_observados, hipoteses e conclusao.
 - Não diga que uma ação resolveu o problema sem uma validação posterior que demonstre mudança de estado.
 - Exit code 0 do cmk -vvn não significa que todos os serviços do host estão OK.
-- Use obrigatoriamente o bloco service_state_report para identificar serviços antes e depois.
-- Respeite o campo resolution de service_state_report: resolved, partially_resolved, not_resolved ou inconclusive.
-- Se ainda houver itens em still_affected ou new_issues, nunca informe resolução completa.
+- Use obrigatoriamente service_state_report para identificar serviços antes e depois.
+- Respeite resolution: resolved, partially_resolved, not_resolved ou inconclusive.
+- Se ainda houver still_affected ou new_issues, nunca informe resolução completa.
 - Se o OMD estiver running mas um serviço monitorado continuar CRIT, trate como problema residual separado.
-- Cite nominalmente os serviços normalizados e os que permaneceram afetados.
+- targeted_plan indica qual coleta deve ser executada; não invente resultado de comandos ainda não executados.
 
-Campos obrigatórios: summary, classification, probable_cause, confidence, evidence_used,
-recommended_read_only_checks, remediation, validation_steps, ticket_report.
+Campos obrigatórios: summary, classification, probable_cause, confidence, facts_observed,
+hypotheses, conclusion, evidence_used, recommended_read_only_checks, remediation,
+validation_steps, resolution_status, normalized_services, remaining_issues, ticket_report.
 classification deve ser: identical_recurrence, similar_recurrence, new_behavior ou inconclusive.
+resolution_status deve ser: resolved, partially_resolved, not_resolved ou inconclusive.
 remediation deve conter objetos com description, command, validation_command, failure_diagnostics, action_type, target e impact.
 target deve ser affected ou monitor. action_type deve ser read_only, service_adjustment, omd_adjustment ou config_adjustment.
 Comandos de remediation devem ser vazios quando não houver correção segura e diretamente relacionada.
@@ -55,6 +51,17 @@ O resumo e o relatório devem ser claros, técnicos, detalhados e sem afirmaçõ
 def _attach_state_report(result: dict[str, Any], service_state_report: dict[str, Any]) -> dict[str, Any]:
     result["service_state_report"] = service_state_report
     result["resolution"] = service_state_report.get("resolution", "inconclusive")
+    result.setdefault("facts_observed", [])
+    result.setdefault("hypotheses", [])
+    result.setdefault("conclusion", result.get("summary", ""))
+    result.setdefault("resolution_status", result["resolution"])
+    result.setdefault("normalized_services", service_state_report.get("normalized", []))
+    result.setdefault(
+        "remaining_issues",
+        (service_state_report.get("still_affected") or []) + (service_state_report.get("new_issues") or []),
+    )
+    if result["resolution"] in {"partially_resolved", "not_resolved", "inconclusive"}:
+        result["resolution_status"] = result["resolution"]
     return result
 
 
@@ -68,15 +75,10 @@ def _deterministic_fallback(
     for finding in findings:
         if not finding.get("found"):
             continue
-
         container = str(finding.get("container") or "").strip()
         site = str(finding.get("site") or "").strip()
         omd_status = finding.get("omd_status", {})
-        status_text = (
-            str(omd_status.get("stdout") or "")
-            + "\n"
-            + str(omd_status.get("stderr") or "")
-        ).lower()
+        status_text = (str(omd_status.get("stdout") or "") + "\n" + str(omd_status.get("stderr") or "")).lower()
 
         if container and site and "partially running" in status_text and "automation-helper" in status_text:
             service = "automation-helper"
@@ -91,12 +93,16 @@ def _deterministic_fallback(
                     f"os serviços monitorados residuais: {residual_names}."
                 ),
                 "classification": "new_behavior",
-                "probable_cause": (
-                    f"Fato observado: o comando `{status_command}` retornou `automation-helper: stopped` "
-                    "e `Overall state: partially running`. Interpretação: o serviço interno automation-helper "
-                    "não está em execução. Nenhuma conclusão de DNS é suportada por essa evidência."
-                ),
+                "probable_cause": "O serviço interno automation-helper está parado conforme o estado retornado pelo OMD.",
                 "confidence": 95,
+                "facts_observed": [
+                    f"{status_command} retornou automation-helper: stopped.",
+                    f"{status_command} retornou Overall state: partially running.",
+                ],
+                "hypotheses": [
+                    "O processo pode ter encerrado após uma falha interna; os logs devem confirmar o motivo."
+                ],
+                "conclusion": "Há evidência suficiente para iniciar somente o automation-helper e validar novamente.",
                 "evidence_used": [
                     f"{status_command} | automation-helper: stopped; Overall state: partially running | serviço interno parado",
                 ],
@@ -104,32 +110,31 @@ def _deterministic_fallback(
                     validation_command,
                     f"docker exec {container} su - {site} -c 'tail -n 120 ~/var/log/automation-helper.log 2>/dev/null'",
                 ],
-                "remediation": [
-                    {
-                        "description": f"Iniciar somente o serviço automation-helper do site OMD {site}, sem reiniciar o container.",
-                        "command": command,
-                        "validation_command": validation_command,
-                        "failure_diagnostics": [
-                            validation_command,
-                            f"docker exec {container} su - {site} -c 'tail -n 120 ~/var/log/automation-helper.log 2>/dev/null'",
-                            f"docker exec {container} su - {site} -c 'ps -ef | grep -F automation-helper | grep -v grep || true'",
-                        ],
-                        "action_type": "omd_adjustment",
-                        "target": "monitor",
-                        "impact": "Baixo: inicia somente o serviço interno automation-helper; o container não é parado nem reiniciado.",
-                    }
-                ],
+                "remediation": [{
+                    "description": f"Iniciar somente o serviço automation-helper do site OMD {site}, sem reiniciar o container.",
+                    "command": command,
+                    "validation_command": validation_command,
+                    "failure_diagnostics": [
+                        validation_command,
+                        f"docker exec {container} su - {site} -c 'tail -n 120 ~/var/log/automation-helper.log 2>/dev/null'",
+                        f"docker exec {container} su - {site} -c 'ps -ef | grep -F automation-helper | grep -v grep || true'",
+                    ],
+                    "action_type": "omd_adjustment",
+                    "target": "monitor",
+                    "impact": "Baixo: inicia somente o serviço interno; o container não é parado nem reiniciado.",
+                }],
                 "validation_steps": [
                     validation_command,
                     f"docker exec {container} omd status {site}",
-                    "Executar novamente cmk -vvn e comparar os serviços CRIT antes e depois.",
-                    "Confirmar separadamente se ainda existe serviço Process automation helpers em CRIT.",
+                    "Executar novamente cmk -vvn e comparar os serviços antes e depois.",
                 ],
+                "resolution_status": service_state_report.get("resolution", "not_resolved"),
+                "normalized_services": service_state_report.get("normalized", []),
+                "remaining_issues": service_state_report.get("still_affected", []),
                 "ticket_report": (
-                    f"O comando `{status_command}` identificou o serviço automation-helper parado e o site OMD {site} "
-                    "em estado parcialmente ativo. Foi executado o início somente desse serviço interno, sem reinício do "
-                    "container. Em seguida foram executadas validações do serviço, do estado global do OMD e dos serviços "
-                    f"monitorados. Resultado de resolução: {service_state_report.get('resolution', 'inconclusive')}."
+                    f"O comando `{status_command}` identificou o automation-helper parado e o site {site} parcialmente ativo. "
+                    "Foi autorizada somente a inicialização do serviço interno, com validação obrigatória posterior. "
+                    "Alertas residuais devem permanecer registrados separadamente."
                 ),
                 "ai_error": message,
                 "analysis_source": "deterministic_fallback",
@@ -139,15 +144,18 @@ def _deterministic_fallback(
     result = {
         "summary": "A coleta foi concluída, mas não foi possível concluir um diagnóstico automático seguro.",
         "classification": "inconclusive",
-        "probable_cause": (
-            "A IA externa ficou indisponível e as evidências locais não corresponderam a uma regra determinística segura. "
-            f"Erro da IA externa: {message}"
-        ),
+        "probable_cause": "As evidências disponíveis não sustentam uma causa raiz única.",
         "confidence": 0,
+        "facts_observed": [],
+        "hypotheses": [],
+        "conclusion": "Diagnóstico inconclusivo; nenhuma correção automática adicional foi autorizada.",
         "evidence_used": [],
         "recommended_read_only_checks": [],
         "remediation": [],
         "validation_steps": [],
+        "resolution_status": service_state_report.get("resolution", "inconclusive"),
+        "normalized_services": service_state_report.get("normalized", []),
+        "remaining_issues": service_state_report.get("still_affected", []),
         "ticket_report": "Evidências coletadas e registradas. Não houve evidência suficiente para uma correção automática segura.",
         "ai_error": message,
         "analysis_source": "deterministic_fallback",
@@ -157,7 +165,10 @@ def _deterministic_fallback(
 
 def analyze_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
     service_state_report = build_service_state_report(payload)
+    detected_services = extract_services(payload.get("checkmk") or {})
     enriched_payload = dict(payload)
+    enriched_payload["detected_services"] = detected_services
+    enriched_payload["targeted_plan"] = build_targeted_plan(detected_services)
     enriched_payload["service_state_report"] = service_state_report
 
     settings = get_settings()
