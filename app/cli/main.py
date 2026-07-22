@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
 from getpass import getpass
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -10,6 +12,7 @@ from rich.table import Table
 
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
+from app.services.persistence import resolve_saved_target
 from app.services.ssh import SSHExecutor
 from app.services.workflow import run_full_diagnosis
 
@@ -37,6 +40,95 @@ def _credentials(default_user: str, default_password: str | None, label: str = "
     return username, password
 
 
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _short(text: str, limit: int = 4000) -> str:
+    value = (text or "").strip()
+    if not value:
+        return "(sem saída)"
+    if len(value) <= limit:
+        return value
+    return value[-limit:] + f"\n[... saída limitada aos últimos {limit} caracteres ...]"
+
+
+def _print_command_result(title: str, result: dict[str, Any] | None) -> None:
+    if not isinstance(result, dict) or "command" not in result:
+        return
+    exit_code = result.get("exit_code", "?")
+    status = "OK" if exit_code == 0 else "FALHA"
+    sudo = " | sudo: sim" if result.get("sudo") else ""
+    console.print(f"\n[bold]{title}[/bold] — [{ 'green' if exit_code == 0 else 'red' }]{status}[/] | retorno: {exit_code}{sudo}")
+    console.print(f"[cyan]Comando:[/cyan] {result.get('command', '')}")
+    stdout = _short(str(result.get("stdout") or ""))
+    stderr = _short(str(result.get("stderr") or ""))
+    console.print(Panel(stdout, title="STDOUT", border_style="green" if exit_code == 0 else "yellow"))
+    if stderr != "(sem saída)":
+        console.print(Panel(stderr, title="STDERR", border_style="red"))
+
+
+def _print_collection_details(evidence: dict[str, Any]) -> None:
+    console.rule("[bold cyan]Evidências coletadas — comandos e retornos[/bold cyan]")
+    affected = evidence.get("affected_host") or {}
+    for key in (
+        "agent_units", "agent_controller", "port_6556", "agent_local_output",
+        "agent_sample", "firewall", "routes", "resources", "recent_agent_logs", "privileges",
+    ):
+        _print_command_result(f"Host afetado / {key}", affected.get(key))
+
+    monitor = evidence.get("monitor") or {}
+    _print_command_result("Monitoramento / Docker", monitor.get("docker"))
+    _print_command_result("Monitoramento / Containers localizados", monitor.get("containers_raw"))
+    for detail in monitor.get("container_details") or []:
+        name = (detail.get("container") or {}).get("name", "container")
+        for key in ("inspect", "sites", "events", "logs"):
+            _print_command_result(f"{name} / {key}", detail.get(key))
+
+    checkmk = evidence.get("checkmk") or {}
+    for finding in checkmk.get("findings") or []:
+        prefix = f"{finding.get('container', '?')} / site {finding.get('site', '?')}"
+        for key in ("omd_status", "cmk_D", "cmk_vvn", "agent_fetch", "nagios_logs", "site_logs"):
+            _print_command_result(f"{prefix} / {key}", finding.get(key))
+
+
+def _print_action_details(actions: list[dict[str, Any]]) -> None:
+    console.rule("[bold cyan]Ações executadas e validações[/bold cyan]")
+    if not actions:
+        console.print("[yellow]Nenhuma ação foi executada.[/yellow]")
+        return
+    for index, action in enumerate(actions, start=1):
+        console.print(Panel(
+            f"Status: {action.get('status', '')}\n"
+            f"Alvo: {action.get('target', '')}\n"
+            f"Descrição: {action.get('description', '')}\n"
+            f"Comando: {action.get('command', '')}\n"
+            f"Retorno: {action.get('exit_code', '-') }\n"
+            f"Saída: {_short(str(action.get('output') or ''))}",
+            title=f"Ação {index}",
+            border_style="green" if action.get("status") == "validated" else "yellow",
+        ))
+        _print_command_result(f"Ação {index} / validação", action.get("validation"))
+        for diagnostic_index, diagnostic in enumerate(action.get("failure_diagnostics") or [], start=1):
+            _print_command_result(f"Ação {index} / diagnóstico de falha {diagnostic_index}", diagnostic)
+
+
+def _print_post_validation(evidence: dict[str, Any]) -> None:
+    post = evidence.get("post_validation") or {}
+    if not post:
+        return
+    console.rule("[bold cyan]Validação completa após a ação[/bold cyan]")
+    _print_collection_details({
+        "affected_host": post.get("affected_host") or {},
+        "monitor": {},
+        "checkmk": post.get("checkmk") or {},
+    })
+
+
 @app.command()
 def run() -> None:
     settings = get_settings()
@@ -44,47 +136,93 @@ def run() -> None:
     console.print("0 - Linux\n1 - pfSense")
     host_option = IntPrompt.ask("Tipo", choices=["0", "1"])
     host_type = "linux" if host_option == 0 else "pfsense"
-    affected_ip = Prompt.ask("IP VPN do host")
-    affected_port = IntPrompt.ask("Porta SSH", default=settings.ssh_default_port)
+    reference = Prompt.ask("IP VPN ou site OMD").strip()
     environment = ask_environment()
-    username, password = _credentials(settings.ssh_default_user, settings.ssh_default_password)
 
+    saved = resolve_saved_target(reference, environment.value)
+    monitor_saved = saved if saved and saved.get("source") == "monitoring_mapping" else None
+
+    if monitor_saved:
+        console.print(
+            f"[green]Site localizado no banco:[/green] {monitor_saved.get('site_name')} → "
+            f"{monitor_saved.get('vpn_ip')}:{monitor_saved.get('ssh_port')} | "
+            f"container {monitor_saved.get('container_name') or 'não informado'}"
+        )
+
+    if environment == EnvironmentType.MONITORING and monitor_saved:
+        affected_ip = str(monitor_saved["vpn_ip"])
+        affected_port = int(monitor_saved["ssh_port"])
+    elif saved and saved.get("source") == "host":
+        affected_ip = str(saved["vpn_ip"])
+        affected_port = int(saved["ssh_port"])
+        console.print(f"[green]Host localizado no banco:[/green] {affected_ip}:{affected_port}")
+    elif _is_ip(reference):
+        affected_ip = reference
+        affected_port = IntPrompt.ask("Porta SSH", default=settings.ssh_default_port)
+    elif monitor_saved:
+        affected_reference = Prompt.ask("IP VPN ou hostname do host afetado").strip()
+        affected_saved = resolve_saved_target(affected_reference, environment.value)
+        if affected_saved:
+            affected_ip = str(affected_saved["vpn_ip"])
+            affected_port = int(affected_saved["ssh_port"])
+            console.print(f"[green]Host afetado localizado no banco:[/green] {affected_ip}:{affected_port}")
+        elif _is_ip(affected_reference):
+            affected_ip = affected_reference
+            affected_port = IntPrompt.ask("Porta SSH do host afetado", default=settings.ssh_default_port)
+        else:
+            console.print(f"[red]Referência '{affected_reference}' não localizada no banco e não é um IP válido.[/red]")
+            raise typer.Exit(2)
+    else:
+        console.print(
+            f"[red]Site/host '{reference}' ainda não está cadastrado no banco. "
+            "Informe o IP VPN na primeira execução para criar o vínculo.[/red]"
+        )
+        raise typer.Exit(2)
+
+    username, password = _credentials(settings.ssh_default_user, settings.ssh_default_password)
     affected = SSHExecutor(affected_ip, affected_port, username, password, settings.ssh_connect_timeout)
     monitor: SSHExecutor | None = None
     monitor_owned = False
+
     try:
-        console.print("\n[cyan]1/4 Conectando ao host...[/cyan]")
+        console.print(f"\n[cyan]1/4 Conectando ao host {affected_ip}:{affected_port}...[/cyan]")
         affected.connect()
 
-        # Ao escolher Monitoramento, o próprio host informado já é o servidor Checkmk.
-        # Para Produção ou Standby, ainda é necessário confirmar se o Checkmk está
-        # no mesmo servidor ou solicitar os dados do servidor de monitoramento.
         if environment == EnvironmentType.MONITORING:
             same_server = True
             monitor_ip, monitor_port = affected_ip, affected_port
             monitor = affected
-            console.print("[dim]Ambiente de monitoramento selecionado: utilizando este host como servidor Checkmk.[/dim]")
+            console.print("[dim]Ambiente de monitoramento: este host será usado como servidor Checkmk.[/dim]")
         else:
             same_server = Confirm.ask("O Checkmk está neste mesmo servidor?", default=False)
             monitor_ip, monitor_port = affected_ip, affected_port
             monitor = affected
             if not same_server:
-                monitor_ip = Prompt.ask("IP VPN do servidor Checkmk")
-                monitor_port = IntPrompt.ask("Porta SSH do Checkmk", default=settings.ssh_default_port)
+                if monitor_saved:
+                    monitor_ip = str(monitor_saved["vpn_ip"])
+                    monitor_port = int(monitor_saved["ssh_port"])
+                    console.print(f"[green]Servidor Checkmk recuperado do banco:[/green] {monitor_ip}:{monitor_port}")
+                else:
+                    monitor_reference = Prompt.ask("IP VPN ou site OMD do servidor Checkmk").strip()
+                    resolved_monitor = resolve_saved_target(monitor_reference, EnvironmentType.MONITORING.value)
+                    if resolved_monitor:
+                        monitor_ip = str(resolved_monitor["vpn_ip"])
+                        monitor_port = int(resolved_monitor["ssh_port"])
+                    elif _is_ip(monitor_reference):
+                        monitor_ip = monitor_reference
+                        monitor_port = IntPrompt.ask("Porta SSH do Checkmk", default=settings.ssh_default_port)
+                    else:
+                        console.print(f"[red]Servidor Checkmk '{monitor_reference}' não localizado.[/red]")
+                        raise typer.Exit(2)
+
                 if Confirm.ask("Usar a mesma credencial?", default=True):
                     monitor_user, monitor_password = username, password
                 else:
                     monitor_user, monitor_password = _credentials(
-                        settings.ssh_default_user,
-                        settings.ssh_default_password,
-                        " do Checkmk",
+                        settings.ssh_default_user, settings.ssh_default_password, " do Checkmk"
                     )
                 monitor = SSHExecutor(
-                    monitor_ip,
-                    monitor_port,
-                    monitor_user,
-                    monitor_password,
-                    settings.ssh_connect_timeout,
+                    monitor_ip, monitor_port, monitor_user, monitor_password, settings.ssh_connect_timeout
                 )
                 monitor.connect()
                 monitor_owned = True
@@ -111,34 +249,28 @@ def run() -> None:
         table.add_row("Host", result["hostname"])
         table.add_row("Container", result["container"] or "não localizado")
         table.add_row("Site OMD", result["site"] or "não localizado")
-        table.add_row("Estado inicial", result["state"])
-        table.add_row("Estado após validação", result["validated_state"])
+        table.add_row("Resultado inicial do cmk", result["state"])
+        table.add_row("Resultado do cmk após validação", result["validated_state"])
         table.add_row("Recorrências", str(result["recurrences"]))
-        table.add_row("Incidente", result["incident_id"])
+        table.add_row("Incidente salvo no banco", result["incident_id"])
         console.print(table)
 
+        _print_collection_details(result.get("evidence") or {})
+        _print_action_details(result.get("actions") or [])
+        _print_post_validation(result.get("evidence") or {})
+
+        console.rule("[bold cyan]Conclusão técnica[/bold cyan]")
         console.print(Panel(str(analysis.get("summary", "Sem resumo")), title="Diagnóstico"))
         console.print(f"[bold]Causa provável:[/bold] {analysis.get('probable_cause', 'inconclusiva')}")
         console.print(f"[bold]Confiança:[/bold] {analysis.get('confidence', 0)}")
-
-        actions = result.get("actions") or []
-        if actions:
-            action_table = Table(title="Ações")
-            action_table.add_column("Status")
-            action_table.add_column("Alvo")
-            action_table.add_column("Ação")
-            for action in actions:
-                action_table.add_row(
-                    action.get("status", ""),
-                    action.get("target", ""),
-                    action.get("description") or action.get("command", ""),
-                )
-            console.print(action_table)
-        else:
-            console.print("[yellow]Nenhum ajuste seguro foi necessário ou recomendado.[/yellow]")
+        evidence_used = analysis.get("evidence_used") or []
+        if evidence_used:
+            console.print("[bold]Evidências usadas na conclusão:[/bold]")
+            for item in evidence_used:
+                console.print(f"  • {item}")
 
         if analysis.get("ai_error"):
-            console.print(f"[yellow]Aviso IA: {analysis['ai_error']}[/yellow]")
+            console.print(f"[yellow]Aviso IA externa: {analysis['ai_error']}[/yellow]")
         console.print(Panel(str(analysis.get("ticket_report", "")), title="Texto para ticket"))
     finally:
         if monitor_owned and monitor:
