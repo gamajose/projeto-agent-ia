@@ -123,11 +123,69 @@ SAFE_REMEDIATION_PATTERNS = [
     re.compile(r"^service\s+[A-Za-z0-9_.@:-]+\s+(start|restart|reload)$"),
     re.compile(r"^docker\s+(start|restart)\s+[A-Za-z0-9_.-]+$"),
     re.compile(r"^docker\s+exec\s+[A-Za-z0-9_.-]+\s+omd\s+(start|restart)\s+[A-Za-z0-9_-]+$"),
+    re.compile(r"^systemctl\s+stop\s+([A-Za-z0-9_.@:-]+)\s*&&\s*systemctl\s+start\s+\1$"),
+    re.compile(r"^service\s+([A-Za-z0-9_.@:-]+)\s+stop\s*&&\s*service\s+\1\s+start$"),
+    re.compile(r"^docker\s+stop\s+([A-Za-z0-9_.-]+)\s*&&\s*docker\s+start\s+\1$"),
+    re.compile(r"^docker\s+exec\s+([A-Za-z0-9_.-]+)\s+omd\s+stop\s+([A-Za-z0-9_-]+)\s*&&\s*docker\s+exec\s+\1\s+omd\s+start\s+\2$"),
+]
+SAFE_VALIDATION_PATTERNS = [
+    re.compile(r"^systemctl\s+(is-active|status)\s+[A-Za-z0-9_.@:-]+(?:\s+--no-pager)?$"),
+    re.compile(r"^service\s+[A-Za-z0-9_.@:-]+\s+status$"),
+    re.compile(r"^docker\s+inspect\s+[A-Za-z0-9_.-]+\s+--format\s+'.+'$"),
+    re.compile(r"^docker\s+ps(?:\s+-a)?(?:\s+--filter\s+name=[A-Za-z0-9_.-]+)?(?:\s+--format\s+'.+')?$"),
+    re.compile(r"^docker\s+exec\s+[A-Za-z0-9_.-]+\s+omd\s+status\s+[A-Za-z0-9_-]+$"),
 ]
 
 
+def _default_validation(command: str) -> str:
+    match = re.search(r"systemctl\s+(?:start|restart|reload|enable)\s+([A-Za-z0-9_.@:-]+)$", command)
+    if not match:
+        match = re.search(r"systemctl\s+stop\s+([A-Za-z0-9_.@:-]+)\s*&&", command)
+    if match:
+        return f"systemctl is-active {match.group(1)}"
+    match = re.search(r"service\s+([A-Za-z0-9_.@:-]+)\s+(?:start|restart|reload)$", command)
+    if not match:
+        match = re.search(r"service\s+([A-Za-z0-9_.@:-]+)\s+stop\s*&&", command)
+    if match:
+        return f"service {match.group(1)} status"
+    match = re.search(r"docker\s+(?:start|restart)\s+([A-Za-z0-9_.-]+)$", command)
+    if not match:
+        match = re.search(r"docker\s+stop\s+([A-Za-z0-9_.-]+)\s*&&", command)
+    if match:
+        return f"docker inspect {match.group(1)} --format '{{{{.State.Running}}}}'"
+    match = re.search(r"docker\s+exec\s+([A-Za-z0-9_.-]+)\s+omd\s+(?:start|restart)\s+([A-Za-z0-9_-]+)$", command)
+    if not match:
+        match = re.search(r"docker\s+exec\s+([A-Za-z0-9_.-]+)\s+omd\s+stop\s+([A-Za-z0-9_-]+)\s*&&", command)
+    if match:
+        return f"docker exec {match.group(1)} omd status {match.group(2)}"
+    return ""
+
+
+def _validation_ok(result: dict[str, Any]) -> bool:
+    if result["exit_code"] != 0:
+        return False
+    text = (result["stdout"] + result["stderr"]).strip().lower()
+    return not any(token in text for token in ("inactive", "failed", "stopped", "false", "dead", "not running"))
+
+
+def _failure_diagnostics(command: str) -> list[str]:
+    match = re.search(r"systemctl(?:\s+stop)?\s+(?:[A-Za-z]+\s+)?([A-Za-z0-9_.@:-]+)", command)
+    if match:
+        unit = match.group(1)
+        return [f"systemctl status {unit} --no-pager", f"journalctl -u {unit} -n 120 --no-pager"]
+    match = re.search(r"docker(?:\s+stop)?\s+(?:[A-Za-z]+\s+)?([A-Za-z0-9_.-]+)", command)
+    if match and "docker exec" not in command:
+        container = match.group(1)
+        return [f"docker inspect {container} --format '{{{{json .State}}}}'", f"docker logs --tail 150 {container}"]
+    match = re.search(r"docker\s+exec\s+([A-Za-z0-9_.-]+)\s+omd\s+(?:stop|start|restart)\s+([A-Za-z0-9_-]+)", command)
+    if match:
+        container, site = match.groups()
+        return [f"docker exec {container} omd status {site}", f"docker logs --tail 150 {container}"]
+    return []
+
+
 def _execute_remediations(analysis: dict[str, Any], affected: SSHExecutor, monitor: SSHExecutor,
-                          environment: EnvironmentType) -> list[dict[str, Any]]:
+                           environment: EnvironmentType) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for item in analysis.get("remediation") or []:
         command = str(item.get("command") or "").strip()
@@ -142,10 +200,30 @@ def _execute_remediations(analysis: dict[str, Any], affected: SSHExecutor, monit
                             "status": "blocked", "reason": decision.reason if not decision.allowed else "Comando fora da lista segura."})
             continue
         executor = monitor if target == "monitor" else affected
-        result = _run_with_sudo_fallback(executor, command, EnvironmentType.MONITORING if target == "monitor" else environment)
-        results.append({"description": item.get("description", ""), "command": command, "target": target,
-                        "status": "executed" if result["exit_code"] == 0 else "failed",
-                        "exit_code": result["exit_code"], "output": (result["stdout"] or result["stderr"])[-1500:]})
+        action_env = EnvironmentType.MONITORING if target == "monitor" else environment
+        result = _run_with_sudo_fallback(executor, command, action_env)
+        action_record: dict[str, Any] = {
+            "description": item.get("description", ""), "command": command, "target": target,
+            "status": "executed" if result["exit_code"] == 0 else "failed",
+            "exit_code": result["exit_code"], "output": (result["stdout"] or result["stderr"])[-1500:],
+        }
+        validation_command = str(item.get("validation_command") or "").strip() or _default_validation(command)
+        if result["exit_code"] == 0 and validation_command:
+            if any(pattern.fullmatch(validation_command) for pattern in SAFE_VALIDATION_PATTERNS):
+                validation = _run_with_sudo_fallback(executor, validation_command, action_env)
+                action_record["validation"] = validation
+                if _validation_ok(validation):
+                    action_record["status"] = "validated"
+                else:
+                    action_record["status"] = "validation_failed"
+                    diagnostics = []
+                    for diagnostic_command in _failure_diagnostics(command):
+                        diagnostics.append(_run_with_sudo_fallback(executor, diagnostic_command, action_env))
+                    action_record["failure_diagnostics"] = diagnostics
+            else:
+                action_record["status"] = "validation_blocked"
+                action_record["validation_reason"] = "Comando de validação fora da lista segura."
+        results.append(action_record)
     return results
 
 
@@ -179,14 +257,15 @@ def run_full_diagnosis(*, affected: SSHExecutor, monitor: SSHExecutor, affected_
         "security_policy": {
             "allowed_environments": ["production", "standby", "monitoring"],
             "host_reboot": "always_denied", "customer_database_access": "always_denied",
-            "safe_adjustments": "authorized", "delete_remove_stop": "specific_approval_required",
+            "safe_adjustments": "authorized", "paired_stop_start": "authorized_with_mandatory_validation",
+            "delete_remove_disable": "specific_approval_required",
         },
     }
     analysis = analyze_with_gemini(evidence)
     actions = _execute_remediations(analysis, affected, monitor, environment)
 
     validation: dict[str, Any] = {}
-    if any(x["status"] == "executed" for x in actions):
+    if any(x["status"] in {"executed", "validated", "validation_failed"} for x in actions):
         validation["affected_host"] = collect_affected_host(affected, environment)
         refreshed_monitor = discover_monitor(monitor, EnvironmentType.MONITORING)
         validation["checkmk"] = inspect_checkmk_host(monitor, EnvironmentType.MONITORING, refreshed_monitor, hostname)
