@@ -12,15 +12,46 @@ def test_database_clients_are_blocked():
 
 
 def test_destructive_commands_are_blocked():
-    for command in ("systemctl stop docker", "docker rm checkmk", "rm -rf /tmp/teste"):
+    for command in ("systemctl stop docker", "rm -rf /tmp/teste"):
         action = classify_command(command)
         assert action == ActionType.DESTRUCTIVE
         assert not evaluate_action(action, EnvironmentType.MONITORING).allowed
 
 
-def test_safe_adjustments_are_allowed():
-    for command in ("systemctl restart check-mk-agent.socket", "docker restart checkmk-soc-25"):
+def test_container_lifecycle_is_always_blocked():
+    for command in (
+        "docker start checkmk-soc-25",
+        "docker stop checkmk-soc-25",
+        "docker restart checkmk-soc-25",
+        "docker kill checkmk-soc-25",
+        "docker rm checkmk-soc-25",
+    ):
         action = classify_command(command)
+        assert action == ActionType.CONTAINER_ADJUSTMENT
+        decision = evaluate_action(action, EnvironmentType.MONITORING)
+        assert not decision.allowed
+        assert decision.policy_code == "CONTAINER_LIFECYCLE_DENIED"
+
+
+def test_service_adjustments_are_allowed():
+    for command in (
+        "systemctl restart check-mk-agent.socket",
+        "systemctl stop check-mk-agent.socket && systemctl start check-mk-agent.socket",
+    ):
+        action = classify_command(command)
+        assert action == ActionType.SERVICE_ADJUSTMENT
+        decision = evaluate_action(action, EnvironmentType.MONITORING)
+        assert decision.allowed
+        assert not decision.requires_approval
+
+
+def test_omd_adjustments_are_allowed_without_container_restart():
+    for command in (
+        "docker exec checkmk-soc-25 omd restart soc",
+        "docker exec checkmk-soc-25 omd stop soc && docker exec checkmk-soc-25 omd start soc",
+    ):
+        action = classify_command(command)
+        assert action == ActionType.OMD_ADJUSTMENT
         decision = evaluate_action(action, EnvironmentType.MONITORING)
         assert decision.allowed
         assert not decision.requires_approval
