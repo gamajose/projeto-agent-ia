@@ -13,21 +13,37 @@ Nunca sugira acesso a banco de dados do cliente. Nunca sugira reboot de host.
 Nunca sugira apagar, remover, desinstalar, matar, desabilitar ou mascarar serviços, containers, sites OMD, arquivos ou configurações.
 É proibido executar qualquer ação de ciclo de vida em containers: docker start, docker stop, docker restart, docker kill, docker rm, docker rmi ou prune.
 Containers podem ser apenas consultados com comandos somente leitura, como docker ps, docker inspect, docker logs e docker events.
-Você pode iniciar ou reiniciar serviços internos do site OMD sem reiniciar o container, executando o comando como usuário do site.
-Exemplo: docker exec CONTAINER su - SITE -c 'omd start SERVICO'.
-Para um serviço OMD parado, prefira iniciar somente o serviço afetado, e não o site inteiro.
 Você pode sugerir ajustes diretamente relacionados ao alerta apenas em serviços do sistema operacional e serviços internos do site OMD: start, restart, reload, enable e também stop seguido imediatamente de start do mesmo recurso.
 Stop isolado é proibido. Quando usar stop/start, o comando deve estar no mesmo campo command e usar && para garantir sequência imediata.
+Exemplos permitidos:
+- systemctl stop SERVICO && systemctl start SERVICO
+- service SERVICO stop && service SERVICO start
+- docker exec CONTAINER su - SITE -c 'omd start SERVICO'
+- docker exec CONTAINER su - SITE -c 'omd restart SERVICO'
+- docker exec CONTAINER omd stop SITE && docker exec CONTAINER omd start SITE
 Toda ação deve conter validation_command apropriado para confirmar que o recurso subiu.
-Se a ação falhar, colete status e logs do serviço antes de concluir o diagnóstico.
+Se a validação falhar, inclua failure_diagnostics com comandos somente leitura para descobrir o motivo e uma segunda correção segura, quando houver evidência suficiente.
 Use somente as evidências fornecidas. Quando não houver evidência suficiente, declare inconclusivo.
+
+REGRAS DE RASTREABILIDADE OBRIGATÓRIAS:
+- Nunca declare falha de DNS apenas porque cmk -D, cmk -vvn ou cmk -d falhou.
+- Só declare falha de DNS quando existir um comando explícito de resolução, como getent hosts, host, dig ou nslookup, e a saída desse comando comprovar a falha.
+- Não confunda nome do host Checkmk com endereço usado para conexão SSH.
+- Para cada causa provável, informe qual comando produziu a evidência e qual trecho da saída sustenta a conclusão.
+- Não repita a mesma causa com frases diferentes.
+- Diferencie claramente: fato observado, interpretação e ação executada.
+- Não diga que uma ação resolveu o problema sem uma validação posterior que demonstre mudança de estado.
+- Exit code 0 do cmk -vvn não significa que todos os serviços do host estão OK; analise o texto da saída e os estados dos serviços.
+- Se o OMD estiver running mas um serviço monitorado continuar CRIT, trate como problema residual separado.
+
 Campos obrigatórios: summary, classification, probable_cause, confidence, evidence_used,
 recommended_read_only_checks, remediation, validation_steps, ticket_report.
 classification deve ser: identical_recurrence, similar_recurrence, new_behavior ou inconclusive.
 remediation deve conter objetos com description, command, validation_command, failure_diagnostics, action_type, target e impact.
 target deve ser affected ou monitor. action_type deve ser read_only, service_adjustment, omd_adjustment ou config_adjustment.
 Comandos de remediation devem ser vazios quando não houver correção segura e diretamente relacionada.
-O resumo e o relatório devem ser claros, curtos e objetivos.
+evidence_used deve conter itens no formato: comando executado | retorno relevante | conclusão suportada.
+O resumo e o relatório devem ser claros, técnicos, detalhados e sem afirmações não comprovadas.
 """.strip()
 
 
@@ -48,46 +64,52 @@ def _deterministic_fallback(payload: dict[str, Any], message: str) -> dict[str, 
         ).lower()
 
         if container and site and "partially running" in status_text and "automation-helper" in status_text:
-            command = f"docker exec {container} su - {site} -c 'omd start automation-helper'"
-            validation_command = f"docker exec {container} su - {site} -c 'omd status automation-helper'"
-            log_command = (
-                f"docker exec {container} su - {site} -c "
-                "'tail -n 150 ~/var/log/automation-helper.log 2>/dev/null'"
-            )
+            service = "automation-helper"
+            command = f"docker exec {container} su - {site} -c 'omd start {service}'"
+            validation_command = f"docker exec {container} su - {site} -c 'omd status {service}'"
+            status_command = str(omd_status.get("command") or f"docker exec {container} omd status {site}")
             return {
                 "summary": "O site OMD está parcialmente ativo porque o serviço automation-helper está parado.",
-                "classification": "identical_recurrence",
-                "probable_cause": "O automation-helper do site OMD não está em execução, mantendo o site parcialmente ativo e o healthcheck do container em estado unhealthy.",
-                "confidence": 98,
+                "classification": "new_behavior",
+                "probable_cause": (
+                    f"Fato observado: o comando `{status_command}` retornou `automation-helper: stopped` "
+                    "e `Overall state: partially running`. Interpretação: o serviço interno automation-helper "
+                    "não está em execução. Nenhuma conclusão de DNS é suportada por essa evidência."
+                ),
+                "confidence": 95,
                 "evidence_used": [
-                    f"Site OMD {site} com estado partially running.",
-                    "Serviço automation-helper identificado como stopped.",
-                    "Healthcheck do container reportando unhealthy por falha no estado do site OMD.",
+                    f"{status_command} | automation-helper: stopped; Overall state: partially running | serviço interno parado",
                 ],
                 "recommended_read_only_checks": [
                     validation_command,
-                    log_command,
+                    f"docker exec {container} su - {site} -c 'tail -n 120 ~/var/log/automation-helper.log 2>/dev/null'",
                 ],
                 "remediation": [
                     {
                         "description": f"Iniciar somente o serviço automation-helper do site OMD {site}, sem reiniciar o container.",
                         "command": command,
                         "validation_command": validation_command,
-                        "failure_diagnostics": [validation_command, log_command],
+                        "failure_diagnostics": [
+                            validation_command,
+                            f"docker exec {container} su - {site} -c 'tail -n 120 ~/var/log/automation-helper.log 2>/dev/null'",
+                            f"docker exec {container} su - {site} -c 'ps -ef | grep -F automation-helper | grep -v grep || true'",
+                        ],
                         "action_type": "omd_adjustment",
                         "target": "monitor",
-                        "impact": "Baixo: inicia apenas o automation-helper dentro do site OMD; não reinicia o container.",
+                        "impact": "Baixo: inicia somente o serviço interno automation-helper; o container não é parado nem reiniciado.",
                     }
                 ],
                 "validation_steps": [
                     validation_command,
                     f"docker exec {container} omd status {site}",
-                    "Executar novamente cmk -vvn para confirmar a normalização do monitoramento.",
+                    "Executar novamente cmk -vvn e comparar os serviços CRIT antes e depois.",
+                    "Confirmar separadamente se ainda existe serviço Process automation helpers em CRIT.",
                 ],
                 "ticket_report": (
-                    f"Identificamos que o site OMD {site} estava parcialmente ativo devido ao serviço "
-                    "automation-helper parado. Foi iniciado somente o serviço afetado dentro do site OMD, "
-                    "sem reiniciar o container, seguido da validação do serviço, do site e do monitoramento."
+                    f"O comando `{status_command}` identificou o serviço automation-helper parado e o site OMD {site} "
+                    "em estado parcialmente ativo. Foi executado o início somente desse serviço interno, sem reinício do "
+                    "container. Em seguida foram executadas validações do serviço, do estado global do OMD e dos serviços "
+                    "monitorados, mantendo eventuais alertas residuais registrados separadamente."
                 ),
                 "ai_error": message,
                 "analysis_source": "deterministic_fallback",
@@ -96,7 +118,10 @@ def _deterministic_fallback(payload: dict[str, Any], message: str) -> dict[str, 
     return {
         "summary": "A coleta foi concluída, mas não foi possível concluir um diagnóstico automático seguro.",
         "classification": "inconclusive",
-        "probable_cause": message,
+        "probable_cause": (
+            "A IA externa ficou indisponível e as evidências locais não corresponderam a uma regra determinística segura. "
+            f"Erro da IA externa: {message}"
+        ),
         "confidence": 0,
         "evidence_used": [],
         "recommended_read_only_checks": [],
