@@ -181,7 +181,7 @@ def analyze_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
 
     client = genai.Client(api_key=settings.gemini_api_key)
     prompt = SYSTEM_RULES + "\n\nEVIDÊNCIAS:\n" + json.dumps(enriched_payload, ensure_ascii=False, default=str)
-    models = [settings.gemini_model, "gemini-3.6-flash", "gemini-3.5-flash"]
+    models = [settings.gemini_model]
     last_error = ""
 
     for model in dict.fromkeys(models):
@@ -204,6 +204,6 @@ def analyze_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
 
     return _deterministic_fallback(
         enriched_payload,
-        last_error or "Nenhum modelo Gemini disponível.",
+        last_error or "O modelo configurado em GEMINI_MODEL não está disponível.",
         service_state_report,
     )
