@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 from dataclasses import asdict
 from typing import Any
 
@@ -13,8 +12,9 @@ from app.core.settings import get_settings
 from app.services.discovery import _clean, discover_host
 from app.services.ssh import SSHExecutor
 
-MAX_ROUNDS = 3
-MAX_COMMANDS = 12
+MAX_ROUNDS = 5
+MAX_COMMANDS = 20
+MAX_OUTPUT_PER_COMMAND = 18000
 
 FORBIDDEN_TOKENS = (
     " rm ", "rm -", " reboot", "shutdown", "poweroff", "halt", "mkfs", "fdisk",
@@ -36,70 +36,146 @@ READ_ONLY_PATTERNS = [
 ]
 
 PLANNER_RULES = """
-Você é o planejador de investigação de um agente AIOps Linux. Responda somente JSON válido.
-Receba o objetivo do operador, a identidade do host e as evidências já coletadas.
-Escolha dinamicamente os próximos comandos necessários para responder ao objetivo. Não use um roteiro fixo.
+Você é o investigador principal de um agente AIOps Linux. Responda somente JSON válido.
+Seu trabalho não é seguir playbook fixo: interprete o objetivo, mantenha hipóteses e decida a próxima coleta com base nas evidências reais já obtidas.
 
 REGRAS:
 - Gere somente comandos de investigação e leitura.
 - Nunca gere reboot, shutdown, alteração de arquivo, instalação, remoção, start/stop/restart, kill ou acesso a banco de dados de cliente.
 - Evite Checkmk, Docker e OMD quando o objetivo não estiver relacionado a monitoramento.
-- Para CPU/memória/disco, priorize comandos como uptime, nproc, lscpu, free -h, vmstat 1 5, df -hT, df -i e lsblk.
-- Para rede, use ip, ss, ping, traceroute/tracepath, getent/dig e logs pertinentes.
-- Para serviço, primeiro descubra status e logs; não tente corrigir.
 - Não repita comandos já executados.
-- Limite a no máximo 6 comandos por rodada.
+- Limite a no máximo 5 comandos por rodada.
+- Cada comando deve testar uma hipótese ou preencher uma lacuna concreta.
 - sudo deve ser true apenas quando a leitura normalmente exige privilégio.
+- Analise as saídas, não apenas os códigos de retorno.
+- Só use done=true quando houver evidência suficiente para responder ao objetivo com segurança.
+- Quando houver ambiguidade, solicite uma nova coleta em vez de concluir prematuramente.
 
-Formato:
-{
-  "objective": "resumo do objetivo",
-  "reasoning_summary": "justificativa curta, sem cadeia de pensamento detalhada",
-  "done": false,
-  "commands": [
-    {"command": "comando", "purpose": "o que valida", "sudo": false}
-  ]
-}
-Se as evidências forem suficientes, use done=true e commands=[].
-""".strip()
-
-ANALYSIS_RULES = """
-Você é um analista AIOps. Responda somente JSON válido usando exclusivamente as evidências executadas.
-Não invente resultados. Relacione cada conclusão ao comando que a suporta.
 Formato obrigatório:
 {
-  "summary": "resumo técnico",
-  "facts": ["fatos comprovados"],
-  "probable_cause": "causa provável ou inconclusiva",
-  "conclusion": "conclusão objetiva",
-  "recommendations": ["próximos passos seguros"],
-  "ticket_report": "texto técnico para ticket"
+  "objective": "resumo do objetivo",
+  "reasoning_summary": "justificativa técnica curta e compartilhável",
+  "hypotheses": ["hipóteses ainda consideradas"],
+  "confirmed_findings": ["achados já comprovados"],
+  "discarded_hypotheses": ["hipóteses descartadas pelas evidências"],
+  "missing_information": ["o que ainda falta saber"],
+  "done": false,
+  "confidence": 0,
+  "commands": [
+    {"command": "comando", "purpose": "hipótese ou métrica validada", "sudo": false}
+  ]
 }
+confidence deve ser inteiro de 0 a 100.
+""".strip()
+
+ROUND_ANALYSIS_RULES = """
+Você é um analista AIOps avaliando uma rodada de investigação. Responda somente JSON válido.
+Interprete os valores presentes em stdout/stderr; código 0 só prova que o comando executou, não que o recurso está saudável.
+Relacione cada afirmação ao comando correspondente. Não invente limites, valores ou resultados.
+
+Formato obrigatório:
+{
+  "round_summary": "o que esta rodada demonstrou",
+  "findings": [
+    {"area": "cpu|memory|disk|io|network|service|monitoring|other", "status": "healthy|attention|critical|inconclusive", "statement": "interpretação objetiva", "evidence_command": "comando", "evidence_excerpt": "trecho curto da saída"}
+  ],
+  "hypotheses_confirmed": ["hipóteses confirmadas"],
+  "hypotheses_discarded": ["hipóteses descartadas"],
+  "remaining_questions": ["lacunas reais"],
+  "needs_more_evidence": true,
+  "confidence": 0
+}
+confidence deve ser inteiro de 0 a 100.
+""".strip()
+
+FINAL_ANALYSIS_RULES = """
+Você é o analista AIOps responsável pela conclusão final. Responda somente JSON válido.
+Use exclusivamente as evidências executadas e as avaliações das rodadas.
+Interprete tecnicamente CPU, load, memória disponível, swap, vmstat, disco, inode, I/O, rede, serviços ou monitoramento conforme o objetivo.
+Código de retorno 0 não significa saúde. Não declare normalidade sem valores que sustentem isso.
+Não diga para o operador analisar manualmente. Entregue a validação pronta, ou declare exatamente qual lacuna impediu a conclusão.
+
+Formato obrigatório:
+{
+  "status": "healthy|attention|critical|inconclusive",
+  "confidence": 0,
+  "summary": "resumo técnico direto",
+  "facts": ["fatos comprovados com valores"],
+  "probable_cause": "causa provável, ausência de anomalia ou motivo exato da inconclusão",
+  "conclusion": "resposta objetiva ao pedido do operador",
+  "recommendations": ["próximos passos seguros e específicos"],
+  "evidence_map": [
+    {"conclusion": "conclusão", "command": "comando", "evidence": "valor ou trecho que sustenta"}
+  ],
+  "ticket_report": "texto técnico pronto para ticket"
+}
+confidence deve ser inteiro de 0 a 100.
+""".strip()
+
+REPAIR_RULES = """
+Converta a resposta abaixo em JSON válido, sem adicionar fatos e mantendo os campos solicitados no prompt original. Retorne somente JSON.
 """.strip()
 
 
 def _json_from_text(text: str) -> dict[str, Any]:
     value = (text or "").strip()
     if value.startswith("```"):
-        value = value.strip("`")
-        if value.startswith("json"):
-            value = value[4:].lstrip()
-    return json.loads(value)
+        value = re.sub(r"^```(?:json)?\s*", "", value, flags=re.IGNORECASE)
+        value = re.sub(r"\s*```$", "", value)
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", value, flags=re.DOTALL)
+        if not match:
+            raise
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else {}
 
 
-def _model_call(prompt: str) -> dict[str, Any] | None:
+def _model_call(prompt: str, purpose: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     settings = get_settings()
+    diagnostics: dict[str, Any] = {"purpose": purpose, "attempts": [], "success": False}
     if not settings.gemini_api_key:
-        return None
+        diagnostics["error"] = "GEMINI_API_KEY não configurada."
+        return None, diagnostics
+
     client = genai.Client(api_key=settings.gemini_api_key)
-    models = [settings.gemini_model, "gemini-3.6-flash", "gemini-3.5-flash"]
-    for model in dict.fromkeys(models):
+    models = [settings.gemini_model, "gemini-2.5-flash", "gemini-2.0-flash"]
+    for model in dict.fromkeys(filter(None, models)):
+        attempt: dict[str, Any] = {"model": model}
         try:
             response = client.models.generate_content(model=model, contents=prompt)
-            return _json_from_text(response.text or "")
-        except Exception:
-            continue
-    return None
+            raw_text = response.text or ""
+            attempt["response_chars"] = len(raw_text)
+            try:
+                result = _json_from_text(raw_text)
+            except Exception as parse_exc:
+                attempt["parse_error"] = f"{type(parse_exc).__name__}: {parse_exc}"
+                try:
+                    repair = client.models.generate_content(
+                        model=model,
+                        contents=REPAIR_RULES + "\n\nRESPOSTA:\n" + raw_text,
+                    )
+                    result = _json_from_text(repair.text or "")
+                    attempt["repaired"] = True
+                except Exception as repair_exc:
+                    attempt["repair_error"] = f"{type(repair_exc).__name__}: {repair_exc}"
+                    diagnostics["attempts"].append(attempt)
+                    continue
+            if result:
+                attempt["status"] = "success"
+                diagnostics["attempts"].append(attempt)
+                diagnostics.update({"success": True, "model": model})
+                result["_ai_model"] = model
+                return result, diagnostics
+            attempt["error"] = "Resposta JSON vazia."
+        except Exception as exc:
+            attempt["error"] = f"{type(exc).__name__}: {exc}"
+        diagnostics["attempts"].append(attempt)
+
+    diagnostics["error"] = "Nenhum modelo retornou uma resposta JSON válida."
+    return None, diagnostics
 
 
 def _fallback_plan(context: str, executed: set[str]) -> dict[str, Any]:
@@ -111,13 +187,13 @@ def _fallback_plan(context: str, executed: set[str]) -> dict[str, Any]:
             commands.append({"command": command, "purpose": purpose, "sudo": sudo})
 
     if any(word in text for word in ("memória", "memoria", "ram", "swap", "cpu", "processador", "lento", "lentidão", "lentidao")):
-        add("uptime", "Validar carga e tempo de atividade")
-        add("nproc; lscpu | head -n 30", "Identificar capacidade de CPU")
-        add("free -h", "Validar RAM e swap")
-        add("vmstat 1 5", "Validar CPU, memória e pressão de I/O")
+        add("uptime", "Comparar load average com a capacidade de CPU")
+        add("nproc; lscpu | head -n 30", "Identificar quantidade e arquitetura das CPUs")
+        add("free -h", "Medir RAM disponível, cache e swap")
+        add("vmstat 1 5", "Medir fila de CPU, swap, I/O e espera")
     if any(word in text for word in ("disco", "filesystem", "file system", "espaço", "espaco", "inode", "partição", "particao")):
-        add("df -hT", "Validar ocupação dos filesystems")
-        add("df -i", "Validar consumo de inodes")
+        add("df -hT", "Medir ocupação e espaço livre dos filesystems")
+        add("df -i", "Medir utilização de inodes")
         add("lsblk -f", "Mapear discos, partições e filesystems")
     if any(word in text for word in ("rede", "comunicação", "comunicacao", "porta", "conexão", "conexao", "dns")):
         add("ip -br address; ip route", "Validar interfaces e rotas")
@@ -129,7 +205,18 @@ def _fallback_plan(context: str, executed: set[str]) -> dict[str, Any]:
         add("uptime", "Validar carga geral")
         add("free -h", "Validar memória")
         add("df -hT", "Validar filesystems")
-    return {"objective": context or "validar saúde do host", "reasoning_summary": "Plano de contingência por palavras-chave.", "done": False, "commands": commands[:6]}
+    return {
+        "objective": context or "validar saúde do host",
+        "reasoning_summary": "Plano mínimo de contingência porque a IA não respondeu.",
+        "hypotheses": [],
+        "confirmed_findings": [],
+        "discarded_hypotheses": [],
+        "missing_information": [],
+        "done": False,
+        "confidence": 0,
+        "commands": commands[:5],
+        "_fallback": True,
+    }
 
 
 def _safe_command(command: str) -> tuple[bool, str]:
@@ -138,16 +225,13 @@ def _safe_command(command: str) -> tuple[bool, str]:
         return False, "comando vazio"
     if any(token in normalized for token in FORBIDDEN_TOKENS):
         return False, "comando contém operação proibida"
-    if not any(pattern.search(command.strip()) for pattern in READ_ONLY_PATTERNS):
+    first_command = command.strip().split(";", 1)[0].strip()
+    if not any(pattern.search(first_command) for pattern in READ_ONLY_PATTERNS):
         return False, "comando fora da lista segura de investigação"
     return True, "autorizado"
 
 
-def _execute(
-    executor: SSHExecutor,
-    environment: EnvironmentType,
-    item: dict[str, Any],
-) -> dict[str, Any]:
+def _execute(executor: SSHExecutor, environment: EnvironmentType, item: dict[str, Any]) -> dict[str, Any]:
     command = str(item.get("command") or "").strip()
     safe, reason = _safe_command(command)
     if not safe:
@@ -166,11 +250,27 @@ def _execute(
             "status": "executed",
             "sudo": use_sudo,
             "exit_code": result.exit_code,
-            "stdout": _clean(result.stdout),
-            "stderr": _clean(result.stderr),
+            "stdout": _clean(result.stdout)[-MAX_OUTPUT_PER_COMMAND:],
+            "stderr": _clean(result.stderr)[-MAX_OUTPUT_PER_COMMAND:],
         }
     except Exception as exc:
         return {"command": command, "purpose": item.get("purpose", ""), "status": "failed", "exit_code": 255, "stdout": "", "stderr": str(exc)}
+
+
+def _inconclusive_analysis(objective: str, diagnostics: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    errors = [item.get("error") for item in diagnostics if item.get("error")]
+    return {
+        "status": "inconclusive",
+        "confidence": 0,
+        "summary": "A coleta foi executada, porém a validação por IA não foi concluída.",
+        "facts": [f"Foram coletadas {len(evidence)} evidências para o objetivo: {objective}."],
+        "probable_cause": "; ".join(errors) or "O modelo não retornou análise estruturada válida.",
+        "conclusion": "Nenhuma conclusão técnica automática foi emitida sem uma análise válida da IA.",
+        "recommendations": ["Validar a chave, o modelo e a conectividade com a API de IA e executar novamente."],
+        "evidence_map": [],
+        "ticket_report": "A coleta técnica foi realizada, mas a etapa de validação por IA ficou inconclusiva por indisponibilidade ou resposta inválida do modelo. Nenhuma conclusão operacional foi emitida.",
+        "ai_diagnostics": diagnostics,
+    }
 
 
 def run_dynamic_investigation(
@@ -183,7 +283,15 @@ def run_dynamic_investigation(
     identity = asdict(discover_host(executor, environment))
     evidence: list[dict[str, Any]] = []
     plans: list[dict[str, Any]] = []
+    round_assessments: list[dict[str, Any]] = []
+    ai_diagnostics: list[dict[str, Any]] = []
     executed: set[str] = set()
+    investigation_state: dict[str, Any] = {
+        "hypotheses": [],
+        "confirmed_findings": [],
+        "discarded_hypotheses": [],
+        "remaining_questions": [],
+    }
 
     objective = context.strip() or "validar a saúde geral do servidor"
     for round_number in range(1, MAX_ROUNDS + 1):
@@ -192,43 +300,98 @@ def run_dynamic_investigation(
             "objective": objective,
             "identity": identity,
             "round": round_number,
+            "investigation_state": investigation_state,
             "already_executed": sorted(executed),
             "evidence": evidence,
+            "round_assessments": round_assessments,
         }
-        plan = _model_call(PLANNER_RULES + "\n\nENTRADA:\n" + json.dumps(payload, ensure_ascii=False, default=str))
+        plan, plan_diag = _model_call(
+            PLANNER_RULES + "\n\nENTRADA:\n" + json.dumps(payload, ensure_ascii=False, default=str),
+            f"planning_round_{round_number}",
+        )
+        ai_diagnostics.append(plan_diag)
         if not plan:
             plan = _fallback_plan(objective, executed)
         plans.append(plan)
-        if plan.get("done"):
-            break
 
+        if plan.get("done") and round_assessments:
+            break
         commands = plan.get("commands") or []
         if not isinstance(commands, list) or not commands:
             break
-        for item in commands[:6]:
+
+        round_evidence: list[dict[str, Any]] = []
+        for item in commands[:5]:
             if len(executed) >= MAX_COMMANDS:
                 break
             command = str(item.get("command") or "").strip()
             if not command or command in executed:
                 continue
             executed.add(command)
-            evidence.append(_execute(executor, environment, item))
+            result = _execute(executor, environment, item)
+            evidence.append(result)
+            round_evidence.append(result)
+
+        if not round_evidence:
+            break
+
+        assessment_payload = {
+            "target": target,
+            "objective": objective,
+            "identity": identity,
+            "round": round_number,
+            "plan": plan,
+            "round_evidence": round_evidence,
+            "previous_assessments": round_assessments,
+        }
+        assessment, assessment_diag = _model_call(
+            ROUND_ANALYSIS_RULES + "\n\nDADOS:\n" + json.dumps(assessment_payload, ensure_ascii=False, default=str),
+            f"analysis_round_{round_number}",
+        )
+        ai_diagnostics.append(assessment_diag)
+        if assessment:
+            round_assessments.append(assessment)
+            investigation_state = {
+                "hypotheses": plan.get("hypotheses") or [],
+                "confirmed_findings": assessment.get("hypotheses_confirmed") or [],
+                "discarded_hypotheses": assessment.get("hypotheses_discarded") or [],
+                "remaining_questions": assessment.get("remaining_questions") or [],
+            }
+            if not assessment.get("needs_more_evidence") and int(assessment.get("confidence") or 0) >= 70:
+                break
+        elif not get_settings().gemini_api_key:
+            break
+
         if len(executed) >= MAX_COMMANDS:
             break
-        if not get_settings().gemini_api_key:
-            break
 
-    analysis_payload = {"target": target, "objective": objective, "identity": identity, "plans": plans, "evidence": evidence}
-    analysis = _model_call(ANALYSIS_RULES + "\n\nDADOS:\n" + json.dumps(analysis_payload, ensure_ascii=False, default=str))
+    final_payload = {
+        "target": target,
+        "objective": objective,
+        "identity": identity,
+        "plans": plans,
+        "round_assessments": round_assessments,
+        "evidence": evidence,
+        "investigation_state": investigation_state,
+    }
+    analysis, final_diag = _model_call(
+        FINAL_ANALYSIS_RULES + "\n\nDADOS:\n" + json.dumps(final_payload, ensure_ascii=False, default=str),
+        "final_analysis",
+    )
+    ai_diagnostics.append(final_diag)
     if not analysis:
-        successful = [item for item in evidence if item.get("status") == "executed"]
-        analysis = {
-            "summary": f"Foram executadas {len(successful)} verificações relacionadas ao objetivo informado.",
-            "facts": [f"{item['command']} retornou código {item.get('exit_code')}." for item in successful],
-            "probable_cause": "Análise automática inconclusiva sem resposta válida do modelo de IA.",
-            "conclusion": "Consulte as evidências coletadas para concluir a validação.",
-            "recommendations": [],
-            "ticket_report": "Coleta técnica executada conforme o objetivo informado; resultados anexados para análise.",
-        }
+        analysis = _inconclusive_analysis(objective, ai_diagnostics, evidence)
+    else:
+        analysis["ai_diagnostics"] = ai_diagnostics
 
-    return {"hostname": identity.get("hostname") or target, "target": target, "context": objective, "identity": identity, "plans": plans, "evidence": evidence, "analysis": analysis}
+    return {
+        "hostname": identity.get("hostname") or target,
+        "target": target,
+        "context": objective,
+        "identity": identity,
+        "plans": plans,
+        "round_assessments": round_assessments,
+        "evidence": evidence,
+        "analysis": analysis,
+        "ai_diagnostics": ai_diagnostics,
+    }
