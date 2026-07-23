@@ -1,11 +1,19 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     app_env: str = "development"
     log_level: str = "INFO"
@@ -22,12 +30,22 @@ class Settings(BaseSettings):
     checkmk_api_user: str | None = None
     checkmk_api_secret: str | None = None
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-3.5-flash"
+    gemini_model: str = "gemini-2.5-flash"
 
     recurrence_warning_count: int = 2
     recurrence_warning_days: int = 7
     recurrence_critical_count: int = 4
     recurrence_critical_days: int = 30
+
+    filesystem_warning_percent: int = 80
+    filesystem_critical_percent: int = 90
+    inode_warning_percent: int = 80
+    inode_critical_percent: int = 90
+    load_warning_ratio: int = 1
+    load_critical_ratio: int = 2
+    agent_max_rounds: int = 5
+    agent_max_commands: int = 20
+    agent_min_confidence: int = 70
 
 
 @lru_cache
