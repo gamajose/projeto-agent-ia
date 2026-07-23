@@ -128,7 +128,7 @@ def _model_call(prompt: str, purpose: str) -> tuple[dict[str, Any] | None, dict[
         return None, diagnostics
 
     client = genai.Client(api_key=settings.gemini_api_key)
-    models = [settings.gemini_model, "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    models = [settings.gemini_model]
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         temperature=0.1,
