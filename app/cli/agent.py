@@ -9,6 +9,7 @@ from rich.table import Table
 
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
+from app.db.base import ensure_database_schema
 from app.services.dynamic_agent import run_dynamic_investigation
 from app.services.operation_intent import infer_operation_intent
 from app.services.persistence import resolve_saved_target
@@ -48,6 +49,25 @@ def command(
     if not target:
         console.print(ctx.get_help())
         raise typer.Exit(0)
+
+    try:
+        created_tables = ensure_database_schema()
+    except Exception as exc:
+        console.print(
+            Panel(
+                f"Não foi possível preparar o banco de dados do agente.\n\n"
+                f"Erro: {type(exc).__name__}: {exc}\n\n"
+                "Verifique POSTGRES_DSN, conectividade e permissão CREATE no banco.",
+                title="Falha na inicialização do banco",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(2) from exc
+
+    if created_tables:
+        console.print(
+            f"[green]Banco preparado automaticamente. Tabelas criadas: {', '.join(created_tables)}[/green]"
+        )
 
     settings = get_settings()
     saved = resolve_saved_target(target, None if environment == EnvironmentType.UNKNOWN else environment.value)
