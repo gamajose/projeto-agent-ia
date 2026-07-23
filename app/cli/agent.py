@@ -32,47 +32,28 @@ def _short(value: str, limit: int = 6000) -> str:
     return value if len(value) <= limit else value[-limit:]
 
 
-def _status_style(status: str) -> str:
-    return {
-        "healthy": "green",
-        "attention": "yellow",
-        "critical": "red",
-        "inconclusive": "magenta",
-    }.get(status, "cyan")
-
-
 @app.callback(invoke_without_command=True)
 def command(
     ctx: typer.Context,
     target: str | None = typer.Argument(None, help="IP, hostname ou alias conhecido."),
     context: list[str] | None = typer.Argument(None, help="Objetivo da investigação em linguagem natural."),
-    environment: EnvironmentType = typer.Option(
-        EnvironmentType.UNKNOWN,
-        "--environment",
-        "-e",
-        help="Ambiente conhecido: production, standby, monitoring ou unknown.",
-    ),
+    environment: EnvironmentType = typer.Option(EnvironmentType.UNKNOWN, "--environment", "-e"),
     ssh_port: int | None = typer.Option(None, "--port", "-p", help="Porta SSH para host novo."),
+    mode: str = typer.Option("investigate", "--mode", "-m", help="investigate ou correct"),
+    approve: bool = typer.Option(False, "--approve", help="Autoriza correções seguras propostas no modo correct."),
 ) -> None:
-    """Agente AIOps com investigação iterativa conduzida por IA.
-
-    Exemplos:
-      agent 172.27.225.28 valide memória, disco e cpu
-      agent bsi identifique por que o servidor está lento
-      agent omn investigue o automation-helper parado
-      agent 172.27.225.31 valide comunicação e DNS
-    """
+    """Agente AIOps com planejamento, análise e correção controlada por IA."""
     if ctx.invoked_subcommand is not None:
         return
     if not target:
         console.print(ctx.get_help())
         raise typer.Exit(0)
+    if mode not in {"investigate", "correct"}:
+        console.print("[red]--mode deve ser investigate ou correct.[/red]")
+        raise typer.Exit(2)
 
     settings = get_settings()
-    saved = resolve_saved_target(
-        target,
-        None if environment == EnvironmentType.UNKNOWN else environment.value,
-    )
+    saved = resolve_saved_target(target, None if environment == EnvironmentType.UNKNOWN else environment.value)
     if saved:
         ip = str(saved["vpn_ip"])
         port = int(saved["ssh_port"])
@@ -90,27 +71,17 @@ def command(
         raise typer.Exit(2)
 
     objective = " ".join(context or []).strip()
-    executor = SSHExecutor(
-        ip,
-        port,
-        settings.ssh_default_user,
-        settings.ssh_default_password,
-        settings.ssh_connect_timeout,
-    )
+    executor = SSHExecutor(ip, port, settings.ssh_default_user, settings.ssh_default_password, settings.ssh_connect_timeout)
 
-    console.print("[bold cyan]AGENT IA — INVESTIGAÇÃO ITERATIVA[/bold cyan]")
+    console.print("[bold cyan]AGENT IA — INVESTIGAÇÃO ORIENTADA A HIPÓTESES[/bold cyan]")
     console.print(f"[cyan]Referência:[/cyan] {target}")
     console.print(f"[cyan]Conexão:[/cyan] {ip}:{port}")
     console.print(f"[cyan]Objetivo:[/cyan] {objective or 'validar a saúde geral do servidor'}")
+    console.print(f"[cyan]Modo:[/cyan] {mode}{' com aprovação' if approve else ''}")
 
     try:
         executor.connect()
-        result = run_dynamic_investigation(
-            executor=executor,
-            target=target,
-            context=objective,
-            environment=environment,
-        )
+        result = run_dynamic_investigation(executor=executor, target=target, context=objective, environment=environment, mode=mode, approve=approve)
     finally:
         executor.close()
 
@@ -120,107 +91,69 @@ def command(
     table.add_column("Valor")
     table.add_row("Hostname", str(result.get("hostname") or "não identificado"))
     table.add_row("Sistema", str(identity.get("os_name") or "não identificado"))
+    table.add_row("Perfil", str(result.get("profile") or "linux_generic"))
     table.add_row("Objetivo", str(result.get("context") or ""))
+    table.add_row("Investigação", str(result.get("investigation_id") or "não persistida"))
+    table.add_row("Duração", f"{result.get('duration_ms', 0)} ms")
     console.print(table)
+
+    history = result.get("history") or []
+    if history:
+        console.print(Panel("\n".join(f"• {item.get('created_at')} | {item.get('status')} | {item.get('confidence')}% | {item.get('objective')}" for item in history), title="Histórico recente utilizado pela IA"))
 
     assessments = result.get("round_assessments") or []
     for index, plan in enumerate(result.get("plans") or [], 1):
         commands = plan.get("commands") or []
-        plan_text = str(plan.get("reasoning_summary") or "Plano criado pela IA.")
-        hypotheses = plan.get("hypotheses") or []
-        if hypotheses:
-            plan_text += "\n\nHipóteses:\n" + "\n".join(f"• {item}" for item in hypotheses)
+        text = str(plan.get("reasoning_summary") or "Plano criado pela IA.")
+        if plan.get("hypotheses"):
+            text += "\n\nHipóteses:\n" + "\n".join(f"• {value}" for value in plan["hypotheses"])
         if commands:
-            plan_text += "\n\nPróximas coletas:\n" + "\n".join(
-                f"• {item.get('command')} — {item.get('purpose', '')}" for item in commands
-            )
-        console.print(Panel(plan_text, title=f"Plano da IA — rodada {index}"))
-
-        if index <= len(assessments):
+            text += "\n\nComandos:\n" + "\n".join(f"• {item.get('command')} — {item.get('purpose', '')}" for item in commands)
+        console.print(Panel(text, title=f"Plano da IA — rodada {index}"))
+        if len(assessments) >= index:
             assessment = assessments[index - 1]
-            body = str(assessment.get("round_summary") or "Sem avaliação da rodada.")
+            body = str(assessment.get("round_summary") or "")
             findings = assessment.get("findings") or []
             if findings:
-                body += "\n\nAchados:\n" + "\n".join(
-                    f"• [{item.get('status', 'inconclusive')}] {item.get('statement', '')} "
-                    f"({item.get('evidence_command', '')})"
-                    for item in findings
-                )
-            remaining = assessment.get("remaining_questions") or []
-            if remaining:
-                body += "\n\nLacunas restantes:\n" + "\n".join(f"• {item}" for item in remaining)
-            body += f"\n\nConfiança da rodada: {assessment.get('confidence', 0)}%"
+                body += "\n\n" + "\n".join(f"• [{item.get('status')}] {item.get('statement')} ({item.get('evidence_command')})" for item in findings)
             console.print(Panel(body, title=f"Interpretação da IA — rodada {index}"))
 
     for index, item in enumerate(result.get("evidence") or [], 1):
         status = item.get("status", "")
-        title = f"{index}. {item.get('purpose') or item.get('command')} — {status}"
-        body = (
-            f"Comando: {item.get('command')}\n"
-            f"Sudo: {'sim' if item.get('sudo') else 'não'}\n"
-            f"Retorno: {item.get('exit_code')}\n\n"
-            f"STDOUT:\n{_short(str(item.get('stdout') or ''))}"
-        )
+        body = f"Comando: {item.get('command')}\nCategoria: {item.get('category', 'n/a')}\nSudo: {'sim' if item.get('sudo') else 'não'}\nRetorno: {item.get('exit_code')}\n\nSTDOUT:\n{_short(str(item.get('stdout') or ''))}"
+        if item.get("normalized"):
+            body += f"\n\nDados normalizados:\n{item.get('normalized')}"
         if item.get("stderr"):
             body += f"\n\nSTDERR:\n{_short(str(item.get('stderr') or ''))}"
         if item.get("reason"):
             body += f"\n\nMotivo: {item.get('reason')}"
-        console.print(Panel(body, title=title, border_style="green" if status == "executed" else "yellow"))
+        console.print(Panel(body, title=f"{index}. {item.get('purpose') or item.get('command')} — {status}", border_style="green" if status == "executed" else "yellow"))
 
     analysis = result.get("analysis") or {}
-    final_status = str(analysis.get("status") or "inconclusive")
+    status = str(analysis.get("status") or "inconclusive").upper()
     confidence = int(analysis.get("confidence") or 0)
-    console.print(
-        Panel(
-            f"Status: {final_status.upper()}\nConfiança: {confidence}%\n\n{analysis.get('summary') or 'Sem resumo'}",
-            title="Validação final da IA",
-            border_style=_status_style(final_status),
-        )
-    )
-
-    facts = analysis.get("facts") or []
-    if facts:
-        console.print("[bold]Fatos comprovados:[/bold]")
-        for fact in facts:
-            console.print(f"  • {fact}")
+    console.print(Panel(f"STATUS: {status}\nCONFIANÇA: {confidence}%\n\n{analysis.get('summary') or 'Sem resumo'}", title="Validação final da IA"))
+    for label, key in (("Fatos comprovados", "facts"), ("Recomendações", "recommendations")):
+        values = analysis.get(key) or []
+        if values:
+            console.print(f"[bold]{label}:[/bold]")
+            for value in values:
+                console.print(f"  • {value}")
     console.print(f"[bold]Causa provável:[/bold] {analysis.get('probable_cause', 'inconclusiva')}")
     console.print(f"[bold]Conclusão:[/bold] {analysis.get('conclusion', 'inconclusiva')}")
 
     evidence_map = analysis.get("evidence_map") or []
     if evidence_map:
-        evidence_table = Table(title="Rastreabilidade das conclusões")
-        evidence_table.add_column("Conclusão")
-        evidence_table.add_column("Comando")
-        evidence_table.add_column("Evidência")
-        for item in evidence_map:
-            evidence_table.add_row(
-                str(item.get("conclusion") or ""),
-                str(item.get("command") or ""),
-                _short(str(item.get("evidence") or ""), 1200),
-            )
-        console.print(evidence_table)
+        console.print(Panel("\n".join(f"• {item.get('conclusion')}\n  Comando: {item.get('command')}\n  Evidência: {item.get('evidence')}" for item in evidence_map), title="Rastreabilidade"))
 
-    recommendations = analysis.get("recommendations") or []
-    if recommendations:
-        console.print("[bold]Recomendações:[/bold]")
-        for recommendation in recommendations:
-            console.print(f"  • {recommendation}")
-
-    if final_status == "inconclusive":
-        diagnostics = analysis.get("ai_diagnostics") or result.get("ai_diagnostics") or []
-        failures = [item for item in diagnostics if not item.get("success")]
-        if failures:
-            diagnostic_text = "\n".join(
-                f"• {item.get('purpose')}: {item.get('error') or 'falha sem detalhe'}"
-                for item in failures
-            )
-            console.print(Panel(diagnostic_text, title="Diagnóstico da integração com IA", border_style="magenta"))
+    corrections = result.get("corrections") or []
+    if corrections:
+        console.print(Panel("\n\n".join(f"{item.get('description')}\nComando: {item.get('command')}\nStatus: {item.get('status')}\nImpacto: {item.get('impact', '')}" for item in corrections), title="Correções controladas"))
 
     console.print(Panel(str(analysis.get("ticket_report") or ""), title="Texto para ticket"))
 
 
 def main() -> None:
-    """Entrypoint do comando único ``agent``."""
     app()
 
 
