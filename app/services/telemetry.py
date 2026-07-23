@@ -45,10 +45,19 @@ def parse_df(text: str) -> dict[str, Any]:
 
 
 def parse_uptime(text: str) -> dict[str, Any]:
-    match = re.search(r"load average[s]?:\s*([\d.,]+)[, ]+([\d.,]+)[, ]+([\d.,]+)", text, re.IGNORECASE)
+    number = r"(\d+(?:[.,]\d+)?)"
+    match = re.search(
+        rf"load average[s]?:\s*{number}\s*,\s*{number}\s*,\s*{number}",
+        text,
+        re.IGNORECASE,
+    )
     if not match:
         return {}
-    return {"load_1m": _number(match.group(1)), "load_5m": _number(match.group(2)), "load_15m": _number(match.group(3))}
+    return {
+        "load_1m": _number(match.group(1)),
+        "load_5m": _number(match.group(2)),
+        "load_15m": _number(match.group(3)),
+    }
 
 
 def parse_nproc(text: str) -> dict[str, Any]:
