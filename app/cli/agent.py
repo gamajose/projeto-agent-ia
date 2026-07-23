@@ -175,6 +175,23 @@ def command(
     console.print(f"[bold]Causa provável:[/bold] {analysis.get('probable_cause', 'inconclusiva')}")
     console.print(f"[bold]Conclusão:[/bold] {analysis.get('conclusion', 'inconclusiva')}")
 
+    if status == "INCONCLUSIVE":
+        diagnostics = result.get("ai_diagnostics") or []
+        lines: list[str] = []
+        for diagnostic in diagnostics:
+            purpose = diagnostic.get("purpose", "chamada_ia")
+            if diagnostic.get("error"):
+                lines.append(f"{purpose}: {diagnostic.get('error')}")
+            for attempt in diagnostic.get("attempts") or []:
+                error = attempt.get("error") or attempt.get("parse_error")
+                if error:
+                    lines.append(f"{purpose} / {attempt.get('model')}: {error}")
+                excerpt = attempt.get("response_excerpt")
+                if excerpt:
+                    lines.append(f"Resposta de {attempt.get('model')}: {excerpt}")
+        if lines:
+            console.print(Panel("\n\n".join(dict.fromkeys(lines)), title="Erro real da API de IA", border_style="red"))
+
     evidence_map = analysis.get("evidence_map") or []
     if evidence_map:
         console.print(Panel("\n".join(f"• {item.get('conclusion')}\n  Comando: {item.get('command')}\n  Evidência: {item.get('evidence')}" for item in evidence_map), title="Rastreabilidade"))
