@@ -14,11 +14,11 @@ class OperationIntent:
 
 
 READ_ONLY_PATTERNS = (
-    r"\bvalid(?:a|ar|e|em|acao|ação|ando|ado|ada)?\b",
-    r"\bverific(?:a|ar|e|em|acao|ação|ando|ado|ada)?\b",
-    r"\banalis(?:a|ar|e|em|ando|ado|ada|e)?\b",
-    r"\binvestig(?:a|ar|e|em|acao|ação|ando|ado|ada)?\b",
-    r"\bdiagnostic(?:a|ar|e|o|ar|ando|ado|ada)?\b",
+    r"\bvalid(?:a|ar|e|em|acao|ando|ado|ada)?\b",
+    r"\bverific(?:a|ar|e|em|acao|ando|ado|ada)?\b",
+    r"\banalis(?:a|ar|e|em|ando|ado|ada)?\b",
+    r"\binvestig(?:a|ar|ue|uem|acao|ando|ado|ada)?\b",
+    r"\bdiagnostic(?:a|ar|e|o|ando|ado|ada)?\b",
     r"\bauditor(?:ia|ar|e|ando|ado|ada)?\b",
     r"\bconsult(?:a|ar|e|ando|ado|ada)?\b",
     r"\bchequ(?:e|ear|ando|ado|ada)?\b",
