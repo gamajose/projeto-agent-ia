@@ -10,6 +10,7 @@ from rich.table import Table
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
 from app.services.dynamic_agent import run_dynamic_investigation
+from app.services.operation_intent import infer_operation_intent
 from app.services.persistence import resolve_saved_target
 from app.services.ssh import SSHExecutor
 
@@ -36,21 +37,17 @@ def _short(value: str, limit: int = 6000) -> str:
 def command(
     ctx: typer.Context,
     target: str | None = typer.Argument(None, help="IP, hostname ou alias conhecido."),
-    context: list[str] | None = typer.Argument(None, help="Objetivo da investigação em linguagem natural."),
-    environment: EnvironmentType = typer.Option(EnvironmentType.UNKNOWN, "--environment", "-e"),
-    ssh_port: int | None = typer.Option(None, "--port", "-p", help="Porta SSH para host novo."),
-    mode: str = typer.Option("investigate", "--mode", "-m", help="investigate ou correct"),
-    approve: bool = typer.Option(False, "--approve", help="Autoriza correções seguras propostas no modo correct."),
+    context: list[str] | None = typer.Argument(None, help="Problema ou objetivo operacional em português."),
+    environment: EnvironmentType = typer.Option(EnvironmentType.UNKNOWN, "--ambiente", "-a", help="Ambiente do host."),
+    ssh_port: int | None = typer.Option(None, "--porta", "-p", help="Porta SSH para host novo."),
+    somente_validar: bool = typer.Option(False, "--somente-validar", help="Força investigação sem executar correções."),
 ) -> None:
-    """Agente AIOps com planejamento, análise e correção controlada por IA."""
+    """Agente AIOps autônomo: investiga, corrige com segurança e valida o resultado."""
     if ctx.invoked_subcommand is not None:
         return
     if not target:
         console.print(ctx.get_help())
         raise typer.Exit(0)
-    if mode not in {"investigate", "correct"}:
-        console.print("[red]--mode deve ser investigate ou correct.[/red]")
-        raise typer.Exit(2)
 
     settings = get_settings()
     saved = resolve_saved_target(target, None if environment == EnvironmentType.UNKNOWN else environment.value)
@@ -71,17 +68,33 @@ def command(
         raise typer.Exit(2)
 
     objective = " ".join(context or []).strip()
+    intent = infer_operation_intent(objective)
+    if somente_validar:
+        mode, approve = "investigate", False
+        intent_reason = "modo somente validação solicitado por --somente-validar"
+    else:
+        mode, approve = intent.mode, intent.approve
+        intent_reason = intent.reason
+
     executor = SSHExecutor(ip, port, settings.ssh_default_user, settings.ssh_default_password, settings.ssh_connect_timeout)
 
-    console.print("[bold cyan]AGENT IA — INVESTIGAÇÃO ORIENTADA A HIPÓTESES[/bold cyan]")
+    console.print("[bold cyan]AGENT IA — OPERAÇÃO AUTÔNOMA[/bold cyan]")
     console.print(f"[cyan]Referência:[/cyan] {target}")
     console.print(f"[cyan]Conexão:[/cyan] {ip}:{port}")
-    console.print(f"[cyan]Objetivo:[/cyan] {objective or 'validar a saúde geral do servidor'}")
-    console.print(f"[cyan]Modo:[/cyan] {mode}{' com aprovação' if approve else ''}")
+    console.print(f"[cyan]Objetivo:[/cyan] {objective or 'resolver o problema informado'}")
+    console.print(f"[cyan]Comportamento:[/cyan] {'somente validar' if mode == 'investigate' else 'investigar, corrigir e validar'}")
+    console.print(f"[dim]{intent_reason}[/dim]")
 
     try:
         executor.connect()
-        result = run_dynamic_investigation(executor=executor, target=target, context=objective, environment=environment, mode=mode, approve=approve)
+        result = run_dynamic_investigation(
+            executor=executor,
+            target=target,
+            context=objective,
+            environment=environment,
+            mode=mode,
+            approve=approve,
+        )
     finally:
         executor.close()
 
@@ -148,7 +161,7 @@ def command(
 
     corrections = result.get("corrections") or []
     if corrections:
-        console.print(Panel("\n\n".join(f"{item.get('description')}\nComando: {item.get('command')}\nStatus: {item.get('status')}\nImpacto: {item.get('impact', '')}" for item in corrections), title="Correções controladas"))
+        console.print(Panel("\n\n".join(f"{item.get('description')}\nComando: {item.get('command')}\nStatus: {item.get('status')}\nImpacto: {item.get('impact', '')}" for item in corrections), title="Correções automáticas controladas"))
 
     console.print(Panel(str(analysis.get("ticket_report") or ""), title="Texto para ticket"))
 
