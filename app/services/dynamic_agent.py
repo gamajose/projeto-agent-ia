@@ -8,6 +8,7 @@ from dataclasses import asdict
 from typing import Any
 
 from google import genai
+from google.genai import types
 
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
@@ -18,13 +19,18 @@ from app.services.ssh import SSHExecutor
 from app.services.telemetry import deterministic_signals, normalize_evidence
 
 MAX_OUTPUT_PER_COMMAND = 18000
+MAX_DIAGNOSTIC_EXCERPT = 2000
 
 PLANNER_RULES = """
 Você é o planejador de um agente AIOps. Responda somente JSON válido.
 Interprete o objetivo, o perfil do ambiente, o histórico e o estado atual da investigação.
 Não siga roteiro fixo. Cada comando deve testar uma hipótese ou preencher uma lacuna real.
 Gere somente comandos de leitura. Não repita comandos. Prefira ferramentas existentes no host.
-Evite Checkmk/Docker/OMD quando o objetivo não for monitoramento.
+O objetivo do operador tem prioridade absoluta. Não faça coleta genérica de CPU, memória ou disco
+quando ela não for necessária para testar uma hipótese ligada ao problema informado.
+Para objetivos relacionados a Checkmk, OMD, automation-helper, automation helpers, processos 2com,
+monitoramento ou sensores, investigue primeiro a arquitetura real do Checkmk no host: containers,
+sites OMD, status do site, processo/serviço citado e logs relacionados.
 Formato:
 {
   "objective":"...", "reasoning_summary":"...", "hypotheses":["..."],
@@ -66,7 +72,8 @@ CORRECTION_RULES = """
 Você é o planejador de correção segura. Responda somente JSON válido.
 Proponha apenas correções diretamente sustentadas pela conclusão, reversíveis e de baixo impacto.
 Nunca proponha reboot, shutdown, remoção, alteração de arquivo, pacote, firewall, banco de cliente ou ciclo de vida de container.
-São aceitos somente: systemctl start/restart/reload de uma unidade; service <unidade> start/restart/reload; ou docker exec <container> su - <site> -c 'omd start|restart <serviço>'.
+São aceitos somente: systemctl start/restart/reload de uma unidade autorizada; service <unidade> start/restart/reload;
+ou docker exec <container> su - <site> -c 'omd start|restart <serviço>'.
 Toda ação precisa de validation_command somente leitura.
 Formato: {"actions":[{"description":"...","command":"...","validation_command":"...","impact":"..."}]}
 """.strip()
@@ -94,26 +101,61 @@ def _json_from_text(text: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _response_metadata(response: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        metadata["candidate_count"] = len(candidates)
+        if candidates:
+            finish_reason = getattr(candidates[0], "finish_reason", None)
+            metadata["finish_reason"] = str(finish_reason) if finish_reason is not None else None
+    except Exception:
+        pass
+    try:
+        feedback = getattr(response, "prompt_feedback", None)
+        if feedback is not None:
+            metadata["prompt_feedback"] = str(feedback)[:MAX_DIAGNOSTIC_EXCERPT]
+    except Exception:
+        pass
+    return metadata
+
+
 def _model_call(prompt: str, purpose: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     settings = get_settings()
     diagnostics: dict[str, Any] = {"purpose": purpose, "attempts": [], "success": False}
     if not settings.gemini_api_key:
         diagnostics["error"] = "GEMINI_API_KEY não configurada."
         return None, diagnostics
+
     client = genai.Client(api_key=settings.gemini_api_key)
-    models = [settings.gemini_model, "gemini-2.5-flash", "gemini-2.0-flash"]
+    models = [settings.gemini_model, "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.1,
+    )
+
     for model in dict.fromkeys(filter(None, models)):
         attempt: dict[str, Any] = {"model": model}
         try:
-            response = client.models.generate_content(model=model, contents=prompt)
+            response = client.models.generate_content(model=model, contents=prompt, config=config)
             raw = response.text or ""
+            attempt.update(_response_metadata(response))
             attempt["response_chars"] = len(raw)
+            attempt["response_excerpt"] = raw[:MAX_DIAGNOSTIC_EXCERPT]
+            if not raw.strip():
+                raise ValueError("A API respondeu sem texto.")
             try:
                 result = _json_from_text(raw)
             except Exception as parse_exc:
                 attempt["parse_error"] = f"{type(parse_exc).__name__}: {parse_exc}"
-                repair = client.models.generate_content(model=model, contents=REPAIR_RULES + "\n\n" + raw)
-                result = _json_from_text(repair.text or "")
+                repair = client.models.generate_content(
+                    model=model,
+                    contents=REPAIR_RULES + "\n\n" + raw,
+                    config=config,
+                )
+                repair_raw = repair.text or ""
+                attempt["repair_response_excerpt"] = repair_raw[:MAX_DIAGNOSTIC_EXCERPT]
+                result = _json_from_text(repair_raw)
                 attempt["repaired"] = True
             if result:
                 attempt["status"] = "success"
@@ -121,10 +163,16 @@ def _model_call(prompt: str, purpose: str) -> tuple[dict[str, Any] | None, dict[
                 diagnostics.update({"success": True, "model": model})
                 result["_ai_model"] = model
                 return result, diagnostics
+            attempt["error"] = "Resposta JSON vazia."
         except Exception as exc:
             attempt["error"] = f"{type(exc).__name__}: {exc}"
         diagnostics["attempts"].append(attempt)
-    diagnostics["error"] = "Nenhum modelo retornou JSON válido."
+
+    detailed_errors = [
+        f"{item.get('model')}: {item.get('error') or item.get('parse_error') or 'falha desconhecida'}"
+        for item in diagnostics["attempts"]
+    ]
+    diagnostics["error"] = " | ".join(detailed_errors) or "Nenhum modelo foi tentado."
     return None, diagnostics
 
 
@@ -138,7 +186,11 @@ def _profile(identity: dict[str, Any], objective: str) -> str:
         return "vmware_esxi"
     if any(value in text for value in ("oracle database", "dataguard", "asm")):
         return "oracle_database"
-    if any(value in text for value in ("checkmk", "omd", "monitoramento", "sensor")):
+    if any(value in text for value in (
+        "checkmk", "check mk", "omd", "monitoramento", "sensor",
+        "automation-helper", "automation helper", "automation helpers",
+        "process 2com", "processo 2com",
+    )):
         return "checkmk"
     if "oracle linux" in text:
         return "oracle_linux"
@@ -150,36 +202,6 @@ def _availability(executor: SSHExecutor, environment: EnvironmentType) -> dict[s
     command = "; ".join(f"command -v {shlex.quote(binary)} >/dev/null 2>&1 && echo {binary}=1 || echo {binary}=0" for binary in binaries)
     result = executor.run(command, environment, timeout=30)
     return {line.split("=", 1)[0]: line.endswith("=1") for line in result.stdout.splitlines() if "=" in line}
-
-
-def _fallback_plan(objective: str, executed: set[str], availability: dict[str, bool]) -> dict[str, Any]:
-    text = objective.casefold()
-    commands: list[dict[str, Any]] = []
-    def add(command: str, purpose: str, sudo: bool = False) -> None:
-        if command not in executed:
-            commands.append({"command": command, "purpose": purpose, "sudo": sudo})
-    if any(word in text for word in ("memória", "memoria", "ram", "swap", "cpu", "lento", "lentidão", "lentidao")):
-        add("uptime", "Comparar load average com a capacidade de CPU")
-        add("nproc", "Identificar CPUs disponíveis")
-        add("free -h", "Medir RAM disponível e swap")
-        add("vmstat 1 5", "Medir fila, swap e espera de I/O")
-        if availability.get("iostat"):
-            add("iostat -xz 1 3", "Validar latência e saturação dos discos")
-    if any(word in text for word in ("disco", "filesystem", "espaço", "espaco", "inode", "partição", "particao")):
-        add("df -hT", "Medir ocupação dos filesystems")
-        add("df -i", "Medir utilização de inodes")
-        add("lsblk -f", "Mapear discos e partições")
-    if any(word in text for word in ("rede", "comunicação", "comunicacao", "porta", "dns")):
-        add("ip -br address; ip route", "Validar interfaces e rotas")
-        add("ss -lntup", "Validar portas e sockets")
-        add("cat /etc/resolv.conf", "Validar configuração DNS")
-    if any(word in text for word in ("checkmk", "omd", "automation-helper", "monitoramento", "sensor")) and availability.get("docker"):
-        add("docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}' | grep -Ei 'checkmk|check-mk' || true", "Descobrir containers Checkmk", True)
-    if not commands:
-        add("uptime", "Validar carga geral")
-        add("free -h", "Validar memória")
-        add("df -hT", "Validar filesystems")
-    return {"objective": objective, "reasoning_summary": "Plano mínimo de contingência.", "hypotheses": [], "confirmed_findings": [], "discarded_hypotheses": [], "missing_information": [], "done": False, "confidence": 0, "commands": commands[:5], "_fallback": True}
 
 
 def _execute(executor: SSHExecutor, environment: EnvironmentType, item: dict[str, Any], availability: dict[str, bool]) -> dict[str, Any]:
@@ -204,9 +226,34 @@ def _execute(executor: SSHExecutor, environment: EnvironmentType, item: dict[str
         return {"command": command, "purpose": item.get("purpose", ""), "status": "failed", "exit_code": 255, "stdout": "", "stderr": str(exc), "normalized": {}}
 
 
+def _diagnostic_errors(diagnostics: list[dict[str, Any]]) -> list[str]:
+    errors: list[str] = []
+    for diagnostic in diagnostics:
+        purpose = diagnostic.get("purpose", "chamada_ia")
+        if diagnostic.get("error"):
+            errors.append(f"{purpose}: {diagnostic['error']}")
+        for attempt in diagnostic.get("attempts") or []:
+            if attempt.get("error") or attempt.get("parse_error"):
+                errors.append(
+                    f"{purpose}/{attempt.get('model')}: "
+                    f"{attempt.get('error') or attempt.get('parse_error')}"
+                )
+    return list(dict.fromkeys(errors))
+
+
 def _inconclusive(objective: str, diagnostics: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    errors = [item.get("error") for item in diagnostics if item.get("error")]
-    return {"status": "inconclusive", "confidence": 0, "summary": "A coleta foi executada, porém a validação por IA não foi concluída.", "facts": [f"Foram coletadas {len(evidence)} evidências para: {objective}."], "probable_cause": "; ".join(errors) or "Resposta inválida do modelo.", "conclusion": "Nenhuma conclusão técnica automática foi emitida.", "recommendations": ["Validar chave, modelo e conectividade com a API de IA."], "evidence_map": [], "ticket_report": "A coleta foi realizada, mas a validação por IA ficou inconclusiva; nenhuma conclusão operacional foi emitida."}
+    errors = _diagnostic_errors(diagnostics)
+    return {
+        "status": "inconclusive",
+        "confidence": 0,
+        "summary": "A IA não conseguiu planejar ou concluir a investigação. Nenhuma coleta genérica foi usada como substituta.",
+        "facts": [f"Objetivo recebido: {objective}.", f"Evidências executadas antes da falha: {len(evidence)}."],
+        "probable_cause": " | ".join(errors) or "Falha não detalhada na API de IA.",
+        "conclusion": "A operação foi interrompida porque não houve decisão válida da IA.",
+        "recommendations": ["Corrigir a integração com a API Gemini usando o erro técnico exibido e executar novamente."],
+        "evidence_map": [],
+        "ticket_report": "A investigação automática não foi executada porque a API de IA não retornou um plano válido.",
+    }
 
 
 def _execute_corrections(executor: SSHExecutor, environment: EnvironmentType, analysis: dict[str, Any], approve: bool) -> list[dict[str, Any]]:
@@ -247,13 +294,15 @@ def run_dynamic_investigation(*, executor: SSHExecutor, target: str, context: st
     state: dict[str, Any] = {"hypotheses": [], "confirmed_findings": [], "discarded_hypotheses": [], "remaining_questions": []}
 
     thresholds = {"filesystem_warning": settings.filesystem_warning_percent, "filesystem_critical": settings.filesystem_critical_percent, "load_warning_ratio": settings.load_warning_ratio, "load_critical_ratio": settings.load_critical_ratio}
+    planner_failed = False
 
     for round_number in range(1, settings.agent_max_rounds + 1):
         payload = {"target": target, "objective": objective, "identity": identity, "profile": profile, "available_tools": availability, "history": history, "round": round_number, "investigation_state": state, "already_executed": sorted(executed), "evidence": evidence, "round_assessments": assessments, "thresholds": thresholds}
         plan, diag = _model_call(PLANNER_RULES + "\n\nENTRADA:\n" + json.dumps(payload, ensure_ascii=False, default=str), f"planning_round_{round_number}")
         diagnostics.append(diag)
         if not plan:
-            plan = _fallback_plan(objective, executed, availability)
+            planner_failed = True
+            break
         plans.append(plan)
         if plan.get("done") and assessments:
             break
@@ -276,23 +325,28 @@ def run_dynamic_investigation(*, executor: SSHExecutor, target: str, context: st
         assessment_payload = {"target": target, "objective": objective, "identity": identity, "profile": profile, "round": round_number, "plan": plan, "round_evidence": round_evidence, "deterministic_signals": signals, "previous_assessments": assessments, "thresholds": thresholds}
         assessment, diag = _model_call(ROUND_RULES + "\n\nDADOS:\n" + json.dumps(assessment_payload, ensure_ascii=False, default=str), f"analysis_round_{round_number}")
         diagnostics.append(diag)
-        if assessment:
-            assessments.append(assessment)
-            state = {"hypotheses": plan.get("hypotheses") or [], "confirmed_findings": assessment.get("hypotheses_confirmed") or [], "discarded_hypotheses": assessment.get("hypotheses_discarded") or [], "remaining_questions": assessment.get("remaining_questions") or []}
-            if not assessment.get("needs_more_evidence") and int(assessment.get("confidence") or 0) >= settings.agent_min_confidence:
-                break
+        if not assessment:
+            break
+        assessments.append(assessment)
+        state = {"hypotheses": plan.get("hypotheses") or [], "confirmed_findings": assessment.get("hypotheses_confirmed") or [], "discarded_hypotheses": assessment.get("hypotheses_discarded") or [], "remaining_questions": assessment.get("remaining_questions") or []}
+        if not assessment.get("needs_more_evidence") and int(assessment.get("confidence") or 0) >= settings.agent_min_confidence:
+            break
         if len(executed) >= settings.agent_max_commands:
             break
 
     signals = deterministic_signals([{"command": item["command"], "normalized": item.get("normalized") or {}} for item in evidence], thresholds)
-    final_payload = {"target": target, "objective": objective, "identity": identity, "profile": profile, "history": history, "plans": plans, "round_assessments": assessments, "evidence": evidence, "deterministic_signals": signals, "investigation_state": state, "thresholds": thresholds}
-    analysis, diag = _model_call(FINAL_RULES + "\n\nDADOS:\n" + json.dumps(final_payload, ensure_ascii=False, default=str), "final_analysis")
-    diagnostics.append(diag)
-    if not analysis:
+    if planner_failed or not plans:
         analysis = _inconclusive(objective, diagnostics, evidence)
+    else:
+        final_payload = {"target": target, "objective": objective, "identity": identity, "profile": profile, "history": history, "plans": plans, "round_assessments": assessments, "evidence": evidence, "deterministic_signals": signals, "investigation_state": state, "thresholds": thresholds}
+        analysis, diag = _model_call(FINAL_RULES + "\n\nDADOS:\n" + json.dumps(final_payload, ensure_ascii=False, default=str), "final_analysis")
+        diagnostics.append(diag)
+        if not analysis:
+            analysis = _inconclusive(objective, diagnostics, evidence)
     analysis["ai_diagnostics"] = diagnostics
 
-    corrections = _execute_corrections(executor, environment, analysis, approve) if mode == "correct" else []
+    ai_succeeded = bool(plans) and bool(assessments) and analysis.get("status") != "inconclusive"
+    corrections = _execute_corrections(executor, environment, analysis, approve) if mode == "correct" and ai_succeeded else []
     duration_ms = int((time.monotonic() - started) * 1000)
     model = next((item.get("model") for item in reversed(diagnostics) if item.get("model")), None)
     investigation_id = save_investigation(target=target, hostname=identity.get("hostname"), objective=objective, environment=environment.value, mode=mode, status=str(analysis.get("status") or "inconclusive"), confidence=int(analysis.get("confidence") or 0), profile=profile, model=model, duration_ms=duration_ms, plans=plans, evidence=evidence, assessments=assessments, analysis=analysis, diagnostics=diagnostics)
