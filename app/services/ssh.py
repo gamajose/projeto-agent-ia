@@ -6,6 +6,7 @@ import shlex
 import paramiko
 
 from app.core.policies import EnvironmentType, classify_command, evaluate_action
+from app.services.correction_policy import validate_correction
 
 
 @dataclass
@@ -50,6 +51,13 @@ class SSHExecutor:
             raise PermissionError(f"{decision.policy_code}: {decision.reason}")
         if decision.requires_approval and not approved:
             raise PermissionError(f"{decision.policy_code}: aprovação explícita necessária")
+
+        # approved=True é usado exclusivamente para ações corretivas propostas pela IA.
+        # Mesmo no modo autônomo, a ação precisa passar pela lista positiva restrita.
+        if approved:
+            correction = validate_correction(command)
+            if not correction.allowed:
+                raise PermissionError(f"CORRECTION_POLICY_BLOCKED: {correction.reason}")
 
     def run(self, command: str, environment: EnvironmentType, approved: bool = False, timeout: int = 60) -> CommandResult:
         if not self.client:
