@@ -9,8 +9,8 @@ from rich.table import Table
 
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
+from app.services.dynamic_agent import run_dynamic_investigation
 from app.services.persistence import resolve_saved_target
-from app.services.smart_agent import run_adaptive_diagnosis
 from app.services.ssh import SSHExecutor
 
 app = typer.Typer(no_args_is_help=True)
@@ -25,7 +25,7 @@ def _is_ip(value: str) -> bool:
         return False
 
 
-def _short(value: str, limit: int = 5000) -> str:
+def _short(value: str, limit: int = 6000) -> str:
     value = (value or "").strip()
     if not value:
         return "(sem saída)"
@@ -35,8 +35,8 @@ def _short(value: str, limit: int = 5000) -> str:
 @app.callback(invoke_without_command=True)
 def command(
     ctx: typer.Context,
-    target: str | None = typer.Argument(None, help="IP, hostname, site OMD, container ou alias conhecido."),
-    context: list[str] | None = typer.Argument(None, help="Sintoma ou objetivo em linguagem natural."),
+    target: str | None = typer.Argument(None, help="IP, hostname ou alias conhecido."),
+    context: list[str] | None = typer.Argument(None, help="Objetivo da investigação em linguagem natural."),
     environment: EnvironmentType = typer.Option(
         EnvironmentType.UNKNOWN,
         "--environment",
@@ -44,15 +44,14 @@ def command(
         help="Ambiente conhecido: production, standby, monitoring ou unknown.",
     ),
     ssh_port: int | None = typer.Option(None, "--port", "-p", help="Porta SSH para host novo."),
-    read_only: bool = typer.Option(False, "--read-only", help="Coleta e análise sem aplicar correções."),
 ) -> None:
-    """Agente adaptativo para diagnóstico e correção segura de infraestrutura.
+    """Agente AIOps com planejamento dinâmico por IA.
 
     Exemplos:
-      agent 172.27.225.31
-      agent omn automation helper parado
-      agent checkmk-omn-25 validar serviços OMD
-      agent bsi servidor lento
+      agent 172.27.225.28 valide memória, disco e cpu
+      agent bsi identifique por que o servidor está lento
+      agent omn investigue o automation-helper parado
+      agent 172.27.225.31 valide comunicação e DNS
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -74,16 +73,14 @@ def command(
         ip = target
         port = int(ssh_port or settings.ssh_default_port)
     else:
-        console.print(
-            f"[red]Alvo '{target}' não existe no inventário. Na primeira execução, informe o IP VPN.[/red]"
-        )
+        console.print(f"[red]Alvo '{target}' não existe no inventário. Na primeira execução, informe o IP VPN.[/red]")
         raise typer.Exit(2)
 
     if not settings.ssh_default_user or not settings.ssh_default_password:
         console.print("[red]SSH_DEFAULT_USER e SSH_DEFAULT_PASSWORD precisam estar configurados no .env.[/red]")
         raise typer.Exit(2)
 
-    symptom = " ".join(context or []).strip()
+    objective = " ".join(context or []).strip()
     executor = SSHExecutor(
         ip,
         port,
@@ -92,69 +89,69 @@ def command(
         settings.ssh_connect_timeout,
     )
 
-    console.print("[bold cyan]AGENT IA — EXECUÇÃO ADAPTATIVA[/bold cyan]")
+    console.print("[bold cyan]AGENT IA — PLANEJAMENTO DINÂMICO[/bold cyan]")
     console.print(f"[cyan]Referência:[/cyan] {target}")
     console.print(f"[cyan]Conexão:[/cyan] {ip}:{port}")
-    console.print(f"[cyan]Contexto:[/cyan] {symptom or 'descobrir o ambiente e corrigir falhas seguras'}")
-    console.print(f"[cyan]Modo:[/cyan] {'somente leitura' if read_only else 'diagnóstico, correção segura e validação'}")
+    console.print(f"[cyan]Objetivo:[/cyan] {objective or 'validar a saúde geral do servidor'}")
 
     try:
         executor.connect()
-        result = run_adaptive_diagnosis(
+        result = run_dynamic_investigation(
             executor=executor,
             target=target,
-            context=symptom,
+            context=objective,
             environment=environment,
-            read_only=read_only,
         )
     finally:
         executor.close()
 
-    table = Table(title="Ambiente descoberto")
+    identity = result.get("identity") or {}
+    table = Table(title="Ambiente identificado")
     table.add_column("Item", style="bold")
     table.add_column("Valor")
-    table.add_row("Hostname real", str(result.get("hostname") or "não identificado"))
-    table.add_row("Containers Checkmk", ", ".join(item["name"] for item in result["containers"]) or "nenhum")
-    resolved = [
-        f"{item['container']}/{item['site']} → {item.get('resolved_checkmk_host')}"
-        for item in result["findings"]
-        if item.get("resolved_checkmk_host")
-    ]
-    table.add_row("Hosts Checkmk resolvidos", "\n".join(resolved) or "nenhuma correspondência automática")
+    table.add_row("Hostname", str(result.get("hostname") or "não identificado"))
+    table.add_row("Sistema", str(identity.get("os_name") or "não identificado"))
+    table.add_row("Objetivo", str(result.get("context") or ""))
     console.print(table)
 
-    for finding in result["findings"]:
-        stopped = finding.get("stopped_services") or []
-        console.print(
-            Panel(
-                _short(finding["omd_status"].get("stdout") or finding["omd_status"].get("stderr") or ""),
-                title=f"{finding['container']} / site {finding['site']} / OMD"
-                + (f" / parados: {', '.join(stopped)}" if stopped else ""),
+    for index, plan in enumerate(result.get("plans") or [], 1):
+        commands = plan.get("commands") or []
+        plan_text = str(plan.get("reasoning_summary") or "Plano criado pela IA.")
+        if commands:
+            plan_text += "\n\n" + "\n".join(
+                f"• {item.get('command')} — {item.get('purpose', '')}" for item in commands
             )
+        console.print(Panel(plan_text, title=f"Plano da IA — rodada {index}"))
+
+    for index, item in enumerate(result.get("evidence") or [], 1):
+        status = item.get("status", "")
+        title = f"{index}. {item.get('purpose') or item.get('command')} — {status}"
+        body = (
+            f"Comando: {item.get('command')}\n"
+            f"Sudo: {'sim' if item.get('sudo') else 'não'}\n"
+            f"Retorno: {item.get('exit_code')}\n\n"
+            f"STDOUT:\n{_short(str(item.get('stdout') or ''))}"
         )
+        if item.get("stderr"):
+            body += f"\n\nSTDERR:\n{_short(str(item.get('stderr') or ''))}"
+        if item.get("reason"):
+            body += f"\n\nMotivo: {item.get('reason')}"
+        console.print(Panel(body, title=title, border_style="green" if status == "executed" else "yellow"))
 
-    if result["actions"]:
-        action_table = Table(title="Ações aplicadas e validadas")
-        action_table.add_column("Ação")
-        action_table.add_column("Status")
-        action_table.add_column("Validação")
-        for action in result["actions"]:
-            validation = action.get("validation") or {}
-            action_table.add_row(
-                action["command"],
-                action["status"],
-                _short(validation.get("stdout") or validation.get("stderr") or "", 1000),
-            )
-        console.print(action_table)
-    elif read_only:
-        console.print("[yellow]Nenhuma ação executada porque --read-only foi informado.[/yellow]")
-    else:
-        console.print("[green]Nenhum serviço OMD parado e autorizado para inicialização foi encontrado.[/green]")
-
-    analysis = result["analysis"]
+    analysis = result.get("analysis") or {}
     console.print(Panel(str(analysis.get("summary") or "Sem resumo"), title="Análise da IA"))
+    facts = analysis.get("facts") or []
+    if facts:
+        console.print("[bold]Fatos comprovados:[/bold]")
+        for fact in facts:
+            console.print(f"  • {fact}")
     console.print(f"[bold]Causa provável:[/bold] {analysis.get('probable_cause', 'inconclusiva')}")
     console.print(f"[bold]Conclusão:[/bold] {analysis.get('conclusion', 'inconclusiva')}")
+    recommendations = analysis.get("recommendations") or []
+    if recommendations:
+        console.print("[bold]Recomendações:[/bold]")
+        for recommendation in recommendations:
+            console.print(f"  • {recommendation}")
     console.print(Panel(str(analysis.get("ticket_report") or ""), title="Texto para ticket"))
 
 
