@@ -3,9 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from google import genai
-
-from app.core.settings import get_settings
+from app.services.ai_providers import get_provider
 from app.services.checkmk_playbooks import build_targeted_plan
 from app.services.checkmk_state import build_service_state_report, extract_services
 
@@ -171,39 +169,19 @@ def analyze_with_gemini(payload: dict[str, Any]) -> dict[str, Any]:
     enriched_payload["targeted_plan"] = build_targeted_plan(detected_services)
     enriched_payload["service_state_report"] = service_state_report
 
-    settings = get_settings()
-    if not settings.gemini_api_key:
-        return _deterministic_fallback(
-            enriched_payload,
-            "GEMINI_API_KEY não configurada.",
-            service_state_report,
-        )
-
-    client = genai.Client(api_key=settings.gemini_api_key)
     prompt = SYSTEM_RULES + "\n\nEVIDÊNCIAS:\n" + json.dumps(enriched_payload, ensure_ascii=False, default=str)
-    models = [settings.gemini_model]
-    last_error = ""
-
-    for model in dict.fromkeys(models):
-        try:
-            response = client.models.generate_content(model=model, contents=prompt)
-            text = (response.text or "").strip()
-            if text.startswith("```"):
-                text = text.strip("`")
-                if text.startswith("json"):
-                    text = text[4:].lstrip()
-            try:
-                result = json.loads(text)
-                result["ai_model"] = model
-                result["analysis_source"] = "gemini"
-                return _attach_state_report(result, service_state_report)
-            except json.JSONDecodeError:
-                last_error = "O Gemini respondeu fora do formato JSON esperado."
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
+    try:
+        provider = get_provider()
+        result, _ = provider.generate_json(prompt)
+        result["ai_model"] = provider.model
+        result["ai_provider"] = provider.name
+        result["analysis_source"] = provider.name
+        return _attach_state_report(result, service_state_report)
+    except Exception as exc:
+        last_error = f"{type(exc).__name__}: {exc}"
 
     return _deterministic_fallback(
         enriched_payload,
-        last_error or "O modelo configurado em GEMINI_MODEL não está disponível.",
+        last_error,
         service_state_report,
     )

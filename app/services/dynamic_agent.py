@@ -7,11 +7,9 @@ import time
 from dataclasses import asdict
 from typing import Any
 
-from google import genai
-from google.genai import types
-
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
+from app.services.ai_providers import get_provider
 from app.services.command_catalog import validate_command
 from app.services.discovery import _clean, discover_host
 from app.services.persistence import recent_investigations, save_investigation
@@ -121,60 +119,21 @@ def _response_metadata(response: Any) -> dict[str, Any]:
 
 
 def _model_call(prompt: str, purpose: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    settings = get_settings()
     diagnostics: dict[str, Any] = {"purpose": purpose, "attempts": [], "success": False}
-    if not settings.gemini_api_key:
-        diagnostics["error"] = "GEMINI_API_KEY não configurada."
-        return None, diagnostics
-
-    client = genai.Client(api_key=settings.gemini_api_key)
-    models = [settings.gemini_model]
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        temperature=0.1,
-    )
-
-    for model in dict.fromkeys(filter(None, models)):
-        attempt: dict[str, Any] = {"model": model}
-        try:
-            response = client.models.generate_content(model=model, contents=prompt, config=config)
-            raw = response.text or ""
-            attempt.update(_response_metadata(response))
-            attempt["response_chars"] = len(raw)
-            attempt["response_excerpt"] = raw[:MAX_DIAGNOSTIC_EXCERPT]
-            if not raw.strip():
-                raise ValueError("A API respondeu sem texto.")
-            try:
-                result = _json_from_text(raw)
-            except Exception as parse_exc:
-                attempt["parse_error"] = f"{type(parse_exc).__name__}: {parse_exc}"
-                repair = client.models.generate_content(
-                    model=model,
-                    contents=REPAIR_RULES + "\n\n" + raw,
-                    config=config,
-                )
-                repair_raw = repair.text or ""
-                attempt["repair_response_excerpt"] = repair_raw[:MAX_DIAGNOSTIC_EXCERPT]
-                result = _json_from_text(repair_raw)
-                attempt["repaired"] = True
-            if result:
-                attempt["status"] = "success"
-                diagnostics["attempts"].append(attempt)
-                diagnostics.update({"success": True, "model": model})
-                result["_ai_model"] = model
-                return result, diagnostics
-            attempt["error"] = "Resposta JSON vazia."
-        except Exception as exc:
-            attempt["error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        provider = get_provider()
+        attempt: dict[str, Any] = {"provider": provider.name, "model": provider.model}
+        result, metadata = provider.generate_json(prompt)
+        attempt.update(metadata)
+        attempt["status"] = "success"
         diagnostics["attempts"].append(attempt)
-
-    detailed_errors = [
-        f"{item.get('model')}: {item.get('error') or item.get('parse_error') or 'falha desconhecida'}"
-        for item in diagnostics["attempts"]
-    ]
-    diagnostics["error"] = " | ".join(detailed_errors) or "Nenhum modelo foi tentado."
-    return None, diagnostics
-
+        diagnostics.update({"success": True, "provider": provider.name, "model": provider.model})
+        result["_ai_model"] = provider.model
+        result["_ai_provider"] = provider.name
+        return result, diagnostics
+    except Exception as exc:
+        diagnostics["error"] = f"{type(exc).__name__}: {exc}"
+        return None, diagnostics
 
 def _profile(identity: dict[str, Any], objective: str) -> str:
     text = f"{identity.get('os_name', '')} {objective}".casefold()

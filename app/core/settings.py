@@ -33,8 +33,19 @@ class Settings(BaseSettings):
 
     checkmk_api_user: str | None = None
     checkmk_api_secret: str | None = None
+    ai_provider: str = "gemini"
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash"
+    groq_api_key: str | None = None
+    groq_model: str = "llama-3.3-70b-versatile"
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    openrouter_api_key: str | None = None
+    openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_app_name: str = "Agent IA Infra"
+    openrouter_site_url: str | None = None
+    ollama_model: str = "llama3.2"
+    ollama_base_url: str = "http://127.0.0.1:11434"
 
     recurrence_warning_count: int = 2
     recurrence_warning_days: int = 7
