@@ -1,0 +1,135 @@
+name: CI e versionamento
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validar código
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: agent_ia
+          POSTGRES_PASSWORD: agent_ia
+          POSTGRES_DB: agent_ia
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent_ia -d agent_ia"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      POSTGRES_DSN: postgresql+psycopg://agent_ia:agent_ia@127.0.0.1:5432/agent_ia
+      REDIS_URL: redis://127.0.0.1:6379/1
+      GEMINI_API_KEY: test-only
+      GEMINI_MODEL: gemini-2.5-flash
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Validar sintaxe
+        run: python -m compileall -q app tests
+
+      - name: Executar testes
+        run: pytest -q
+
+      - name: Validar versão SemVer e tag inédita
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          VERSION="$(python - <<'PY'
+          import tomllib
+          with open('pyproject.toml', 'rb') as file:
+              print(tomllib.load(file)['project']['version'])
+          PY
+          )"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::A versão $VERSION não segue MAJOR.MINOR.PATCH."
+            exit 1
+          fi
+          git fetch --tags --force
+          if git rev-parse "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "::error::A tag v$VERSION já existe. Atualize a versão no pyproject.toml."
+            exit 1
+          fi
+          echo "Versão validada: v$VERSION"
+
+  tag:
+    name: Criar tag da versão
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Baixar código e tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Criar e publicar tag
+        shell: bash
+        run: |
+          VERSION="$(python - <<'PY'
+          import tomllib
+          with open('pyproject.toml', 'rb') as file:
+              print(tomllib.load(file)['project']['version'])
+          PY
+          )"
+          TAG="v$VERSION"
+          git fetch --tags --force
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::A tag $TAG já existe. O merge exige uma nova versão."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
