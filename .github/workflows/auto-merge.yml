@@ -1,0 +1,128 @@
+name: Merge automático após CI
+
+on:
+  workflow_run:
+    workflows:
+      - CI e versionamento
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-merge-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    name: Integrar PR aprovado
+    if: >-
+      github.event.workflow_run.workflow_id == 319667928 &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Localizar e validar pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PR_NUMBER="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/pull_requests" --jq '.[0].number // empty')"
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Nenhum pull request associado à execução $RUN_ID."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PR_DATA="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          BASE_REF="$(jq -r '.base.ref' <<< "$PR_DATA")"
+          HEAD_REF="$(jq -r '.head.ref' <<< "$PR_DATA")"
+          HEAD_SHA="$(jq -r '.head.sha' <<< "$PR_DATA")"
+          HEAD_REPOSITORY="$(jq -r '.head.repo.full_name // empty' <<< "$PR_DATA")"
+          IS_DRAFT="$(jq -r '.draft' <<< "$PR_DATA")"
+          STATE="$(jq -r '.state' <<< "$PR_DATA")"
+          LABELS="$(jq -r '[.labels[].name] | join(",")' <<< "$PR_DATA")"
+
+          echo "Pull request: #$PR_NUMBER"
+          echo "Origem: $HEAD_REPOSITORY:$HEAD_REF"
+          echo "Destino: $BASE_REF"
+          echo "Labels: ${LABELS:-nenhuma}"
+
+          if [ "$STATE" != "open" ]; then
+            echo "PR não está aberto; nenhuma ação necessária."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$BASE_REF" != "main" ]; then
+            echo "PR não aponta para a main; merge automático ignorado."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]; then
+            echo "PR originado de outro repositório; revisão manual obrigatória."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$IS_DRAFT" = "true" ]; then
+            echo "PR está em rascunho; merge automático ignorado."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if jq -e '.labels | any(.name == "manual-review")' <<< "$PR_DATA" >/dev/null; then
+            echo "Label manual-review encontrada; merge automático bloqueado."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Fazer merge por squash
+        if: steps.pr.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for attempt in 1 2 3; do
+            if gh api \
+              --method PUT \
+              "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge" \
+              -f merge_method=squash \
+              -f sha="$HEAD_SHA" \
+              --jq '.message'; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Não foi possível integrar o PR #$PR_NUMBER após o CI aprovado."
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+      - name: Remover branch integrada
+        if: steps.pr.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+        shell: bash
+        run: |
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${HEAD_REF}" || true
