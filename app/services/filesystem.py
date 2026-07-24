@@ -1,30 +1,59 @@
-from functools import lru_cache
-from pathlib import Path
+from __future__ import annotations
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
+import re
+import shlex
+from dataclasses import asdict
+from typing import Any
+
+from app.core.policies import EnvironmentType
+from app.services.ai_providers import get_provider
+from app.services.discovery import _clean, discover_host
+from app.services.persistence import recurrence_history, save_incident, upsert_host
+from app.services.ssh import SSHExecutor
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FILESYSTEM_RULES = """
+Você é um analista AIOps especializado em filesystem Linux.
+Responda exclusivamente em JSON válido.
+Use somente as evidências fornecidas e cite os comandos que sustentam cada conclusão.
+Não invente falha de DNS, aplicação, banco de dados ou rede sem evidência direta.
+Nunca recomende reboot, remoção de arquivos, rm, truncate, limpeza automática, formatação,
+redimensionamento, desmontagem, fsck online ou qualquer ação destrutiva.
+O fluxo é de diagnóstico seguro: identifique utilização de blocos, inodes, tipo do filesystem,
+montagem, maiores diretórios, arquivos abertos removidos, erros de I/O, estado de LVM e fstab.
+Quando houver filesystem cheio, diferencie: consumo real de arquivos, inodes esgotados,
+arquivos removidos ainda abertos, erro de montagem, filesystem somente leitura ou indício de I/O.
+Campos obrigatórios: summary, classification, probable_cause, confidence, evidence_used,
+recommended_read_only_checks, remediation, validation_steps, ticket_report.
+classification deve ser: identical_recurrence, similar_recurrence, new_behavior ou inconclusive.
+remediation deve ser uma lista. Como este módulo não remove arquivos automaticamente,
+use command vazio e descreva a ação manual recomendada quando houver risco.
+Toda evidência deve mencionar o comando e o retorno relevante.
+""".strip()
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=PROJECT_ROOT / ".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
+def _run(executor: SSHExecutor, command: str, environment: EnvironmentType, sudo: bool = False) -> dict[str, Any]:
+    try:
+        result = executor.run_sudo(command, environment) if sudo else executor.run(command, environment)
+        return {
+            "command": command,
+            "exit_code": result.exit_code,
+            "stdout": _clean(result.stdout),
+            "stderr": _clean(result.stderr),
+            "sudo": sudo,
+        }
+    except Exception as exc:
+        return {"command": command, "exit_code": 255, "stdout": "", "stderr": str(exc), "sudo": sudo}
 
-    app_env: str = "development"
-    log_level: str = "INFO"
 
-    ssh_default_user: str = "2com"
-    ssh_default_password: str | None = None
-    ssh_private_key_path: str | None = None
-    ssh_private_key_passphrase: str | None = None
-    ssh_allow_agent: bool = True
-    ssh_look_for_keys: bool = True
-    ssh_default_port: int = 22…9348 tokens truncated…command, environment, sudo=True) if denied else result
+def _run_with_sudo_fallback(executor: SSHExecutor, command: str, environment: EnvironmentType) -> dict[str, Any]:
+    result = _run(executor, command, environment)
+    combined = (result["stdout"] + result["stderr"]).lower()
+    denied = any(token in combined for token in (
+        "permission denied", "operation not permitted", "access denied", "not permitted"
+    ))
+    return _run(executor, command, environment, sudo=True) if denied else result
 
 
 def _filesystem_state(df_output: str, inode_output: str) -> tuple[str, int, int]:
@@ -132,7 +161,6 @@ def _analyze_with_ai(payload: dict[str, Any]) -> dict[str, Any]:
         return result
     except Exception as exc:
         return _deterministic_analysis(payload, f"{type(exc).__name__}: {exc}")
-
 
 def run_filesystem_diagnosis(
     *,
