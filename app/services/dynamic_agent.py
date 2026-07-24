@@ -135,7 +135,6 @@ def _model_call(prompt: str, purpose: str) -> tuple[dict[str, Any] | None, dict[
         diagnostics["error"] = f"{type(exc).__name__}: {exc}"
         return None, diagnostics
 
-
 def _profile(identity: dict[str, Any], objective: str) -> str:
     text = f"{identity.get('os_name', '')} {objective}".casefold()
     if any(value in text for value in ("pfsense", "freebsd")):
