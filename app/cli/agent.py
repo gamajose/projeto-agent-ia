@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 
+import paramiko
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -83,8 +84,8 @@ def command(
         console.print(f"[red]Alvo '{target}' não existe no inventário. Na primeira execução, informe o IP VPN.[/red]")
         raise typer.Exit(2)
 
-    if not settings.ssh_default_user or not settings.ssh_default_password:
-        console.print("[red]SSH_DEFAULT_USER e SSH_DEFAULT_PASSWORD precisam estar configurados no .env.[/red]")
+    if not settings.ssh_default_user:
+        console.print("[red]SSH_DEFAULT_USER precisa estar configurado no .env.[/red]")
         raise typer.Exit(2)
 
     objective = " ".join(context or []).strip()
@@ -96,7 +97,17 @@ def command(
         mode, approve = intent.mode, intent.approve
         intent_reason = intent.reason
 
-    executor = SSHExecutor(ip, port, settings.ssh_default_user, settings.ssh_default_password, settings.ssh_connect_timeout)
+    executor = SSHExecutor(
+        ip,
+        port,
+        settings.ssh_default_user,
+        settings.ssh_default_password,
+        settings.ssh_connect_timeout,
+        private_key_path=settings.ssh_private_key_path,
+        private_key_passphrase=settings.ssh_private_key_passphrase,
+        allow_agent=settings.ssh_allow_agent,
+        look_for_keys=settings.ssh_look_for_keys,
+    )
 
     console.print("[bold cyan]AGENT IA — OPERAÇÃO AUTÔNOMA[/bold cyan]")
     console.print(f"[cyan]Referência:[/cyan] {target}")
@@ -115,6 +126,39 @@ def command(
             mode=mode,
             approve=approve,
         )
+    except paramiko.BadAuthenticationType as exc:
+        allowed = ", ".join(exc.allowed_types or [])
+        console.print(
+            Panel(
+                "O servidor recusou autenticação por senha.\n\n"
+                f"Métodos permitidos pelo servidor: {allowed or 'não informados'}.\n\n"
+                "Configure SSH_PRIVATE_KEY_PATH no .env ou carregue a chave no ssh-agent. "
+                "O usuário definido em SSH_DEFAULT_USER também precisa ter a chave pública autorizada no host.",
+                title="Falha de autenticação SSH",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(3) from exc
+    except paramiko.AuthenticationException as exc:
+        console.print(
+            Panel(
+                "Não foi possível autenticar no servidor. Verifique SSH_DEFAULT_USER, "
+                "SSH_PRIVATE_KEY_PATH, permissões da chave e a chave pública cadastrada no host.",
+                title="Falha de autenticação SSH",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(3) from exc
+    except (paramiko.SSHException, OSError) as exc:
+        console.print(
+            Panel(
+                f"Não foi possível estabelecer a conexão SSH com {ip}:{port}.\n\n"
+                f"Erro: {type(exc).__name__}: {exc}",
+                title="Falha de conexão SSH",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(3) from exc
     finally:
         executor.close()
 
