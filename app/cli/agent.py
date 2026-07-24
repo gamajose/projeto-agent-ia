@@ -12,6 +12,7 @@ from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.dynamic_agent import run_dynamic_investigation
+from app.services.ai_providers import provider_status
 from app.services.operation_intent import infer_operation_intent
 from app.services.persistence import resolve_saved_target
 from app.services.ssh import SSHExecutor
@@ -43,10 +44,31 @@ def command(
     environment: EnvironmentType = typer.Option(EnvironmentType.UNKNOWN, "--ambiente", "-a", help="Ambiente do host."),
     ssh_port: int | None = typer.Option(None, "--porta", "-p", help="Porta SSH para host novo."),
     somente_validar: bool = typer.Option(False, "--somente-validar", help="Força investigação sem executar correções."),
+    menu: bool = typer.Option(False, "--menu", help="Seleciona um provedor sem conectar a nenhum host."),
 ) -> None:
     """Agente AIOps autônomo: investiga, corrige com segurança e valida o resultado."""
     if ctx.invoked_subcommand is not None:
         return
+    if menu:
+        rows = provider_status()
+        table = Table(title="Provedores de IA")
+        table.add_column("#")
+        table.add_column("Provedor")
+        table.add_column("Modelo")
+        table.add_column("Estado")
+        for index, item in enumerate(rows, 1):
+            state = "configurado" if item["configured"] else "falta chave"
+            table.add_row(str(index), item["label"], item["model"], state)
+        console.print(table)
+        choice = typer.prompt("Escolha o número", type=int)
+        if choice < 1 or choice > len(rows):
+            console.print("[red]Seleção inválida.[/red]")
+            raise typer.Exit(2)
+        selected = rows[choice - 1]
+        console.print(f"[green]Selecionado: {selected['label']} — {selected['model']}[/green]")
+        console.print(f"Para usar nesta sessão: [cyan]export AI_PROVIDER={selected['name']}[/cyan]")
+        console.print("Nenhuma conexão remota foi iniciada.")
+        raise typer.Exit(0)
     if not target:
         console.print(ctx.get_help())
         raise typer.Exit(0)
