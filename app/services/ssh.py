@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import shlex
 
 import paramiko
@@ -18,12 +19,28 @@ class CommandResult:
 
 
 class SSHExecutor:
-    def __init__(self, host: str, port: int, username: str, password: str, connect_timeout: int = 15):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        password: str | None = None,
+        connect_timeout: int = 15,
+        *,
+        private_key_path: str | None = None,
+        private_key_passphrase: str | None = None,
+        allow_agent: bool = True,
+        look_for_keys: bool = True,
+    ):
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.connect_timeout = connect_timeout
+        self.private_key_path = str(Path(private_key_path).expanduser()) if private_key_path else None
+        self.private_key_passphrase = private_key_passphrase
+        self.allow_agent = allow_agent
+        self.look_for_keys = look_for_keys
         self.client: paramiko.SSHClient | None = None
 
     def connect(self) -> None:
@@ -33,10 +50,14 @@ class SSHExecutor:
             hostname=self.host,
             port=self.port,
             username=self.username,
-            password=self.password,
+            password=self.password or None,
+            key_filename=self.private_key_path,
+            passphrase=self.private_key_passphrase,
             timeout=self.connect_timeout,
-            allow_agent=False,
-            look_for_keys=False,
+            auth_timeout=self.connect_timeout,
+            banner_timeout=self.connect_timeout,
+            allow_agent=self.allow_agent,
+            look_for_keys=self.look_for_keys,
         )
         self.client = client
 
@@ -73,10 +94,14 @@ class SSHExecutor:
             raise RuntimeError("Conexão SSH não iniciada.")
 
         self._validate(command, environment, approved)
-        wrapped = f"sudo -S -p '' sh -lc {shlex.quote(command)}"
-        stdin, stdout, stderr = self.client.exec_command(wrapped, timeout=timeout, get_pty=False)
-        stdin.write(self.password + "\n")
-        stdin.flush()
-        stdin.channel.shutdown_write()
+        if self.password:
+            wrapped = f"sudo -S -p '' sh -lc {shlex.quote(command)}"
+            stdin, stdout, stderr = self.client.exec_command(wrapped, timeout=timeout, get_pty=False)
+            stdin.write(self.password + "\n")
+            stdin.flush()
+            stdin.channel.shutdown_write()
+        else:
+            wrapped = f"sudo -n sh -lc {shlex.quote(command)}"
+            _, stdout, stderr = self.client.exec_command(wrapped, timeout=timeout, get_pty=False)
         exit_code = stdout.channel.recv_exit_status()
         return CommandResult(command, exit_code, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace"))

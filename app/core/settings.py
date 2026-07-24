@@ -20,6 +20,10 @@ class Settings(BaseSettings):
 
     ssh_default_user: str = "2com"
     ssh_default_password: str | None = None
+    ssh_private_key_path: str | None = None
+    ssh_private_key_passphrase: str | None = None
+    ssh_allow_agent: bool = True
+    ssh_look_for_keys: bool = True
     ssh_default_port: int = 22
     ssh_connect_timeout: int = 15
     ssh_command_timeout: int = 60
