@@ -22,7 +22,20 @@ O workflow `CI e versionamento` executa automaticamente:
 4. validação da versão no formato `MAJOR.MINOR.PATCH`;
 5. verificação de que a tag da versão ainda não existe.
 
-O pull request deve ser integrado somente depois que o job `Validar código` estiver concluído com sucesso.
+## Merge automático
+
+Depois que o workflow `CI e versionamento` terminar com sucesso, o workflow `Merge automático após CI` integra o pull request na `main` usando squash.
+
+O merge automático ocorre somente quando:
+
+- o pull request está aberto;
+- o destino é a branch `main`;
+- a branch pertence ao próprio repositório;
+- o pull request não está em rascunho;
+- a label `manual-review` não está aplicada;
+- todos os testes e validações do CI foram aprovados.
+
+Use a label `manual-review` quando uma alteração precisar de conferência humana antes do merge. Pull requests vindos de forks também exigem revisão manual.
 
 ## Versionamento
 
@@ -30,7 +43,7 @@ A versão oficial está no arquivo `pyproject.toml`:
 
 ```toml
 [project]
-version = "0.2.0"
+version = "0.2.1"
 ```
 
 Use versionamento semântico:
@@ -52,7 +65,7 @@ vMAJOR.MINOR.PATCH
 Exemplo:
 
 ```text
-v0.2.0
+v0.2.1
 ```
 
 Se a tag já existir, o pipeline falha para impedir que duas versões diferentes usem o mesmo número.
@@ -72,7 +85,7 @@ Para instalar uma versão específica:
 ```bash
 cd /opt/agent-ia
 git fetch --tags
-git switch --detach v0.2.0
+git switch --detach v0.2.1
 ```
 
 Antes de atualizar um servidor operacional, confira o resultado do GitHub Actions e a tag publicada.
