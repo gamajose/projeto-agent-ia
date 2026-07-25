@@ -11,8 +11,9 @@ from rich.table import Table
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
-from app.services.dynamic_agent import run_dynamic_investigation
 from app.services.ai_providers import provider_status
+from app.services.codex_cli import CodexCLIError, codex_cli_status, launch_codex
+from app.services.dynamic_agent import run_dynamic_investigation
 from app.services.operation_intent import infer_operation_intent
 from app.services.persistence import resolve_saved_target
 from app.services.ssh import SSHExecutor
@@ -44,27 +45,59 @@ def command(
     environment: EnvironmentType = typer.Option(EnvironmentType.UNKNOWN, "--ambiente", "-a", help="Ambiente do host."),
     ssh_port: int | None = typer.Option(None, "--porta", "-p", help="Porta SSH para host novo."),
     somente_validar: bool = typer.Option(False, "--somente-validar", help="Força investigação sem executar correções."),
-    menu: bool = typer.Option(False, "--menu", help="Seleciona um provedor sem conectar a nenhum host."),
+    menu: bool = typer.Option(False, "--menu", help="Seleciona um provedor ou abre uma ferramenta local."),
 ) -> None:
     """Agente AIOps autônomo: investiga, corrige com segurança e valida o resultado."""
     if ctx.invoked_subcommand is not None:
         return
     if menu:
-        rows = provider_status()
-        table = Table(title="Provedores de IA")
+        settings = get_settings()
+        rows = provider_status(settings)
+        codex = codex_cli_status(settings)
+        rows.append(
+            {
+                "kind": "tool",
+                "name": "codex-cli",
+                "label": "OpenAI Codex CLI",
+                "model": codex.version,
+                "configured": codex.available,
+                "workdir": codex.workdir,
+            }
+        )
+
+        table = Table(title="Provedores e ferramentas de IA")
         table.add_column("#")
-        table.add_column("Provedor")
-        table.add_column("Modelo")
+        table.add_column("Tipo")
+        table.add_column("Provedor/Ferramenta")
+        table.add_column("Modelo/Versão")
         table.add_column("Estado")
         for index, item in enumerate(rows, 1):
-            state = "configurado" if item["configured"] else "falta chave"
-            table.add_row(str(index), item["label"], item["model"], state)
+            if item.get("kind") == "tool":
+                state = "disponível" if item["configured"] else "não encontrado"
+                kind = "ferramenta"
+            else:
+                state = "configurado" if item["configured"] else "falta configuração"
+                kind = "provedor"
+            table.add_row(str(index), kind, item["label"], item["model"], state)
         console.print(table)
+
         choice = typer.prompt("Escolha o número", type=int)
         if choice < 1 or choice > len(rows):
             console.print("[red]Seleção inválida.[/red]")
             raise typer.Exit(2)
         selected = rows[choice - 1]
+
+        if selected.get("kind") == "tool" and selected["name"] == "codex-cli":
+            console.print(f"[green]Selecionado: {selected['label']} — {selected['model']}[/green]")
+            console.print(f"[cyan]Diretório de trabalho:[/cyan] {selected['workdir']}")
+            console.print("Nenhuma conexão SSH foi iniciada pelo Agent IA.")
+            try:
+                exit_code = launch_codex(settings)
+            except CodexCLIError as exc:
+                console.print(Panel(str(exc), title="Codex CLI indisponível", border_style="red"))
+                raise typer.Exit(2) from exc
+            raise typer.Exit(exit_code)
+
         console.print(f"[green]Selecionado: {selected['label']} — {selected['model']}[/green]")
         console.print(f"Para usar nesta sessão: [cyan]export AI_PROVIDER={selected['name']}[/cyan]")
         console.print("Nenhuma conexão remota foi iniciada.")

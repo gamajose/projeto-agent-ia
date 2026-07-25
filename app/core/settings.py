@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     openrouter_site_url: str | None = None
     ollama_model: str = "llama3.2"
     ollama_base_url: str = "http://127.0.0.1:11434"
+    omniroute_api_key: str | None = None
+    omniroute_model: str = ""
+    omniroute_base_url: str = "http://127.0.0.1:20128/v1"
+
+    codex_cli_path: str | None = None
+    codex_workdir: str | None = None
+    codex_home: str | None = None
 
     recurrence_warning_count: int = 2
     recurrence_warning_days: int = 7

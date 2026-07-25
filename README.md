@@ -62,9 +62,10 @@ O alvo pode ser um IP VPN, hostname, site OMD, container ou alias já salvo. Qua
 Opções disponíveis:
 
 ```bash
-agent 172.27.225.31 --port 2222
-agent bsi --environment monitoring
-agent bsi --read-only
+agent 172.27.225.31 --porta 2222
+agent bsi --ambiente monitoring
+agent bsi --somente-validar
+agent --menu
 agent --help
 ```
 
@@ -80,15 +81,22 @@ Execute a API:
 uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-## Provedores de IA
+## Provedores e ferramentas de IA
 
-O Gemini continua sendo o padrão, portanto `agent IP ...` mantém o
-comportamento atual. `agent --menu` lista Gemini, Groq/Llama, OpenRouter e
-Ollama local, mostra o modelo configurado e não abre SSH nem inicia uma
-investigação.
+O Gemini continua sendo o padrão, portanto `agent IP ...` mantém o comportamento atual.
 
-A seleção do menu mostra como definir `AI_PROVIDER` na sessão. Para tornar a
-escolha permanente, configure no `.env`:
+`agent --menu` agora lista:
+
+- Google Gemini;
+- Groq/Llama;
+- OpenRouter;
+- Ollama local;
+- OmniRoute gateway;
+- OpenAI Codex CLI.
+
+Os cinco primeiros são provedores usados pelo motor de investigação. O Codex CLI é uma ferramenta local interativa: quando escolhido, o Agent detecta a versão e abre o Codex diretamente no diretório configurado, sem iniciar SSH.
+
+Exemplo de configuração:
 
 ```env
 AI_PROVIDER=gemini
@@ -100,14 +108,19 @@ OPENROUTER_API_KEY=
 OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct:free
 OLLAMA_MODEL=llama3.2
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+OMNIROUTE_API_KEY=
+OMNIROUTE_MODEL=
+OMNIROUTE_BASE_URL=http://127.0.0.1:20128/v1
+CODEX_CLI_PATH=/home/jose/ia/codex
+CODEX_WORKDIR=/home/jose/ia/codex
 ```
 
-Chaves e senhas nunca devem ser commitadas. Mantenha os valores secretos
-somente no `.env` local ou no gerenciador de segredos do ambiente.
+O OmniRoute deve ser executado como um serviço separado e consumido pela API compatível com OpenAI. Não é necessário copiar o código do OmniRoute para dentro deste repositório.
+
+Veja o tutorial completo em [`docs/omniroute-codex.md`](docs/omniroute-codex.md).
+
+Chaves e senhas nunca devem ser commitadas. Mantenha os valores secretos somente no `.env` local ou no gerenciador de segredos do ambiente.
 
 ## Inventário seguro da VPN
 
-`config/playbooks/vpn-access.yml` documenta o servidor `10.17.181.1` e os
-nomes das variáveis de ambiente de acesso. O playbook é declarativo: não acessa
-localhost, não abre SSH e não executa comandos remotos. Uma operação posterior
-exige confirmação explícita, e o segredo não pode aparecer em logs.
+`config/playbooks/vpn-access.yml` documenta o servidor `10.17.181.1` e os nomes das variáveis de ambiente de acesso. O playbook é declarativo: não acessa localhost, não abre SSH e não executa comandos remotos. Uma operação posterior exige confirmação explícita, e o segredo não pode aparecer em logs.
