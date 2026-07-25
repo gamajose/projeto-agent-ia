@@ -1,0 +1,23 @@
+[Unit]
+Description=Agent IA Infra Worker
+After=network-online.target redis.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jose
+Group=jose
+WorkingDirectory=/opt/agent-ia
+EnvironmentFile=/opt/agent-ia/.env
+ExecStart=/opt/agent-ia/.venv/bin/agent-worker run
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/agent-ia /home/jose/.ssh
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

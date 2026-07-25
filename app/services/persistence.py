@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import aliased
 
 from app.db.base import SessionLocal
-from app.db.models import HostORM, IncidentORM, InvestigationORM, MonitoringMappingORM
+from app.db.models import ApprovalExecutionORM, HostORM, IncidentORM, InvestigationORM, MonitoringMappingORM
 
 
 def upsert_host(*, host_type: str, vpn_ip: str, ssh_port: int, hostname: str, os_name: str,
@@ -123,6 +125,22 @@ def save_incident(*, affected_host_id, site_name: str | None, checkmk_host: str,
         return str(incident.id)
 
 
+def _investigation_dict(row: InvestigationORM, *, include_evidence: bool = False) -> dict[str, Any]:
+    result = {
+        "id": str(row.id), "target": row.target, "hostname": row.hostname,
+        "objective": row.objective, "environment": row.environment, "mode": row.mode,
+        "status": row.status, "confidence": row.confidence, "profile": row.profile,
+        "model": row.model, "duration_ms": row.duration_ms, "analysis": row.analysis,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+    if include_evidence:
+        result.update({
+            "plans": row.plans, "evidence": row.evidence,
+            "assessments": row.assessments, "diagnostics": row.diagnostics,
+        })
+    return result
+
+
 def recent_investigations(*, target: str, hostname: str | None, limit: int = 5) -> list[dict[str, Any]]:
     with SessionLocal() as session:
         conditions = [InvestigationORM.target == target]
@@ -134,11 +152,61 @@ def recent_investigations(*, target: str, hostname: str | None, limit: int = 5) 
             .order_by(InvestigationORM.created_at.desc())
             .limit(limit)
         ).all()
-        return [{
-            "id": str(row.id), "objective": row.objective, "status": row.status,
-            "confidence": row.confidence, "profile": row.profile,
-            "analysis": row.analysis, "created_at": row.created_at.isoformat() if row.created_at else None,
-        } for row in rows]
+        return [_investigation_dict(row) for row in rows]
+
+
+def _tokens(text: str) -> set[str]:
+    return {item for item in re.findall(r"[a-z0-9_.:-]{3,}", (text or "").casefold()) if item not in {"para", "com", "uma", "dos", "das", "server", "servidor"}}
+
+
+def similar_investigations(*, objective: str, profile: str | None, target: str | None = None, limit: int = 5) -> list[dict[str, Any]]:
+    wanted = _tokens(objective)
+    with SessionLocal() as session:
+        rows = session.scalars(select(InvestigationORM).order_by(InvestigationORM.created_at.desc()).limit(100)).all()
+        scored: list[tuple[float, InvestigationORM]] = []
+        for row in rows:
+            current = _tokens(row.objective + " " + str((row.analysis or {}).get("probable_cause") or ""))
+            overlap = len(wanted & current) / max(1, len(wanted | current))
+            score = overlap
+            if profile and row.profile == profile:
+                score += 0.25
+            if target and row.target == target:
+                score += 0.20
+            if row.status != "inconclusive":
+                score += 0.05
+            if score >= 0.20:
+                scored.append((score, row))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        result = []
+        for score, row in scored[:limit]:
+            item = _investigation_dict(row)
+            item["similarity"] = round(min(score, 1.0), 3)
+            result.append(item)
+        return result
+
+
+def get_investigation(investigation_id: str, *, include_evidence: bool = True) -> dict[str, Any] | None:
+    try:
+        identifier = uuid.UUID(str(investigation_id))
+    except ValueError:
+        return None
+    with SessionLocal() as session:
+        row = session.get(InvestigationORM, identifier)
+        return _investigation_dict(row, include_evidence=include_evidence) if row else None
+
+
+def update_investigation_analysis(investigation_id: str, analysis: dict[str, Any]) -> bool:
+    try:
+        identifier = uuid.UUID(str(investigation_id))
+    except ValueError:
+        return False
+    with SessionLocal() as session:
+        row = session.get(InvestigationORM, identifier)
+        if not row:
+            return False
+        row.analysis = analysis
+        session.commit()
+        return True
 
 
 def save_investigation(*, target: str, hostname: str | None, objective: str, environment: str,
@@ -156,3 +224,42 @@ def save_investigation(*, target: str, hostname: str | None, objective: str, env
         session.commit()
         session.refresh(row)
         return str(row.id)
+
+
+def create_approval_execution(*, investigation_id: str, token_digest: str, requested_by: str | None, actions: list[dict[str, Any]]) -> str:
+    with SessionLocal() as session:
+        row = ApprovalExecutionORM(
+            investigation_id=uuid.UUID(investigation_id), token_digest=token_digest,
+            requested_by=requested_by, status="pending", actions=actions, results=[],
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return str(row.id)
+
+
+def complete_approval_execution(execution_id: str, *, status: str, results: list[dict[str, Any]]) -> None:
+    with SessionLocal() as session:
+        row = session.get(ApprovalExecutionORM, uuid.UUID(execution_id))
+        if not row:
+            return
+        row.status = status
+        row.results = results
+        row.executed_at = datetime.now(timezone.utc)
+        session.commit()
+
+
+def operational_metrics() -> dict[str, Any]:
+    with SessionLocal() as session:
+        total = int(session.scalar(select(func.count(InvestigationORM.id))) or 0)
+        average_duration = float(session.scalar(select(func.avg(InvestigationORM.duration_ms))) or 0)
+        status_rows = session.execute(select(InvestigationORM.status, func.count(InvestigationORM.id)).group_by(InvestigationORM.status)).all()
+        mode_rows = session.execute(select(InvestigationORM.mode, func.count(InvestigationORM.id)).group_by(InvestigationORM.mode)).all()
+        approval_rows = session.execute(select(ApprovalExecutionORM.status, func.count(ApprovalExecutionORM.id)).group_by(ApprovalExecutionORM.status)).all()
+        return {
+            "investigations_total": total,
+            "average_duration_ms": round(average_duration, 2),
+            "by_status": {status: int(count) for status, count in status_rows},
+            "by_mode": {mode: int(count) for mode, count in mode_rows},
+            "approval_executions": {status: int(count) for status, count in approval_rows},
+        }

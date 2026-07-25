@@ -1,0 +1,18 @@
+id: network-vpn-tunnel-down
+title: Rede - túnel VPN indisponível
+priority: 85
+profiles: [pfsense, fortigate, linux_generic]
+match:
+  any:
+    - "vpn.*(down|indispon[ií]vel|caiu|offline)"
+    - "t[uú]nel.*(down|caiu)"
+    - "ipsec.*down"
+    - "openvpn.*down"
+steps:
+  - tool: vpn.inspect
+    purpose: Verificar interfaces, rotas e processos VPN
+  - tool: network.interfaces
+    purpose: Correlacionar endereçamento e rotas
+allowed_corrections: []
+validation:
+  - tool: vpn.inspect

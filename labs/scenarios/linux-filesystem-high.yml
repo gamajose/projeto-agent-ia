@@ -1,0 +1,21 @@
+name: Linux Filesystem High
+responses:
+  - pattern: "hostname"
+    stdout: "lab-linux-disk\n"
+  - pattern: "PRETTY_NAME|os-release"
+    stdout: "Oracle Linux Server 8.10\n"
+  - pattern: "ip -br|ifconfig"
+    stdout: "eth0 UP 172.30.0.11/24\n"
+  - pattern: "list-unit-files"
+    stdout: "check-mk-agent.socket enabled\n"
+  - pattern: "command -v"
+    stdout: "iostat=1\nmpstat=1\nsar=1\ndig=1\ntraceroute=1\ntracepath=1\ndocker=0\ncmk-agent-ctl=0\nsnmpwalk=1\nnc=1\n"
+  - pattern: "df -hP"
+    stdout: "Filesystem Size Used Avail Use% Mounted on\n/dev/mapper/ol-root 40G 38G 2G 95% /\n"
+  - pattern: "df -iP"
+    stdout: "Filesystem Inodes IUsed IFree IUse% Mounted on\n/dev/mapper/ol-root 1000000 400000 600000 40% /\n"
+  - pattern: "du -x"
+    stdout: "2.0G /var/log\n5.0G /var/lib\n22G /var/lib/docker\n"
+default:
+  exit_code: 0
+  stdout: "ok\n"

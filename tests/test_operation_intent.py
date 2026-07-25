@@ -16,14 +16,21 @@ def test_portuguese_validation_words_force_read_only() -> None:
         assert intent.read_only is True
 
 
-def test_problem_without_validation_verb_runs_safe_correction_mode() -> None:
+def test_problem_without_validation_verb_proposes_instead_of_executing() -> None:
     intent = infer_operation_intent("problema no Checkmk, automation-helper parado")
-    assert intent.mode == "correct"
-    assert intent.approve is True
+    assert intent.mode == "propose"
+    assert intent.approve is False
     assert intent.read_only is False
 
 
-def test_safe_monitoring_recovery_is_allowed() -> None:
+def test_explicit_correction_word_still_requires_mode_option() -> None:
+    intent = infer_operation_intent("corrija o automation-helper parado")
+    assert intent.mode == "propose"
+    assert intent.approve is False
+    assert "--modo corrigir" in intent.reason
+
+
+def test_safe_monitoring_recovery_is_allowed_by_restricted_catalog() -> None:
     assert validate_correction("systemctl restart check-mk-agent.socket").allowed
     assert validate_correction("systemctl enable --now check-mk-agent.socket").allowed
     assert validate_correction("omd restart automation-helper").allowed

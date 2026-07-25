@@ -1,0 +1,23 @@
+id: checkmk-agent-port-6556
+title: Checkmk - agente ou porta 6556 indisponível
+priority: 95
+profiles: [checkmk, oracle_linux, linux_generic]
+match:
+  any:
+    - "6556"
+    - "check.?mk.*agent"
+    - "agent.*refused"
+    - "agent.*timeout"
+steps:
+  - tool: checkmk.inspect_agent_socket
+    purpose: Validar unidade, listener e resposta local
+  - tool: systemd.inspect_unit
+    arguments: {unit: check-mk-agent.socket}
+  - tool: systemd.inspect_unit
+    arguments: {unit: xinetd.service}
+  - tool: journal.read_unit
+    arguments: {unit: check-mk-agent.socket, lines: 100}
+allowed_corrections:
+  - systemd.recover_unit
+validation:
+  - tool: checkmk.inspect_agent_socket

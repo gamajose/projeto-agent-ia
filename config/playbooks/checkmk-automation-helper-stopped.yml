@@ -1,0 +1,21 @@
+id: checkmk-automation-helper-stopped
+title: Checkmk - automation-helper parado
+priority: 100
+profiles: [checkmk]
+match:
+  any:
+    - "automation[- ]helper"
+    - "automation helpers"
+steps:
+  - tool: checkmk.discover
+    purpose: Descobrir containers e sites OMD
+  - tool: checkmk.find_omd_service
+    arguments: {service: automation-helper}
+    purpose: Localizar e consultar o automation-helper
+  - tool: docker.list_unhealthy
+    purpose: Verificar saúde dos containers sem reiniciá-los
+allowed_corrections:
+  - checkmk.recover_omd_service
+validation:
+  - tool: checkmk.find_omd_service
+    arguments: {service: automation-helper}

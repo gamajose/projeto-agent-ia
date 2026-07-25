@@ -1,0 +1,18 @@
+id: checkmk-rrdcached-stopped
+title: Checkmk - rrdcached parado
+priority: 100
+profiles: [checkmk]
+match:
+  any:
+    - "rrdcached"
+    - "rrd.*stopped"
+steps:
+  - tool: checkmk.discover
+  - tool: checkmk.find_omd_service
+    arguments: {service: rrdcached}
+  - tool: docker.list_unhealthy
+allowed_corrections:
+  - checkmk.recover_omd_service
+validation:
+  - tool: checkmk.find_omd_service
+    arguments: {service: rrdcached}

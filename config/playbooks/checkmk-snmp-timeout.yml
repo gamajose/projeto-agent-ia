@@ -1,0 +1,23 @@
+id: checkmk-snmp-timeout
+title: Checkmk - SNMP timeout ou sem resposta
+priority: 90
+profiles: [checkmk, pfsense, fortigate, linux_generic]
+match:
+  any:
+    - "snmp.*timeout"
+    - "no snmp response"
+    - "sem resposta.*snmp"
+    - "porta 161"
+steps:
+  - tool: network.interfaces
+  - tool: systemd.inspect_unit
+    arguments: {unit: snmpd.service}
+  - tool: systemd.inspect_unit
+    arguments: {unit: bsnmpd.service}
+  - tool: journal.read_unit
+    arguments: {unit: snmpd.service, lines: 100}
+allowed_corrections:
+  - systemd.recover_unit
+validation:
+  - tool: systemd.inspect_unit
+    arguments: {unit: snmpd.service}

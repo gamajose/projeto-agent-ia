@@ -31,6 +31,14 @@ class SSHExecutor:
         private_key_passphrase: str | None = None,
         allow_agent: bool = True,
         look_for_keys: bool = True,
+        strict_host_key_checking: bool = True,
+        known_hosts_path: str = "~/.ssh/known_hosts",
+        bastion_host: str | None = None,
+        bastion_port: int = 22,
+        bastion_user: str | None = None,
+        bastion_password: str | None = None,
+        bastion_private_key_path: str | None = None,
+        bastion_private_key_passphrase: str | None = None,
     ):
         self.host = host
         self.port = port
@@ -41,11 +49,64 @@ class SSHExecutor:
         self.private_key_passphrase = private_key_passphrase
         self.allow_agent = allow_agent
         self.look_for_keys = look_for_keys
+        self.strict_host_key_checking = strict_host_key_checking
+        self.known_hosts_path = str(Path(known_hosts_path).expanduser())
+        self.bastion_host = bastion_host
+        self.bastion_port = bastion_port
+        self.bastion_user = bastion_user
+        self.bastion_password = bastion_password
+        self.bastion_private_key_path = str(Path(bastion_private_key_path).expanduser()) if bastion_private_key_path else None
+        self.bastion_private_key_passphrase = bastion_private_key_passphrase
         self.client: paramiko.SSHClient | None = None
+        self.bastion_client: paramiko.SSHClient | None = None
+
+    def _configure_host_keys(self, client: paramiko.SSHClient) -> None:
+        client.load_system_host_keys()
+        known_hosts = Path(self.known_hosts_path)
+        if known_hosts.exists():
+            client.load_host_keys(str(known_hosts))
+        if self.strict_host_key_checking:
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        else:
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    def _common_connect_args(self) -> dict:
+        return {
+            "timeout": self.connect_timeout,
+            "auth_timeout": self.connect_timeout,
+            "banner_timeout": self.connect_timeout,
+            "allow_agent": self.allow_agent,
+            "look_for_keys": self.look_for_keys,
+        }
 
     def connect(self) -> None:
+        sock = None
+        if self.bastion_host:
+            bastion = paramiko.SSHClient()
+            self._configure_host_keys(bastion)
+            bastion.connect(
+                hostname=self.bastion_host,
+                port=self.bastion_port,
+                username=self.bastion_user or self.username,
+                password=self.bastion_password or None,
+                key_filename=self.bastion_private_key_path,
+                passphrase=self.bastion_private_key_passphrase,
+                **self._common_connect_args(),
+            )
+            transport = bastion.get_transport()
+            if transport is None or not transport.is_active():
+                bastion.close()
+                raise paramiko.SSHException("transporte do bastion não ficou ativo")
+            sock = transport.open_channel(
+                "direct-tcpip",
+                (self.host, self.port),
+                ("127.0.0.1", 0),
+                timeout=self.connect_timeout,
+            )
+            self.bastion_client = bastion
+
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        self._configure_host_keys(client)
         client.connect(
             hostname=self.host,
             port=self.port,
@@ -53,17 +114,18 @@ class SSHExecutor:
             password=self.password or None,
             key_filename=self.private_key_path,
             passphrase=self.private_key_passphrase,
-            timeout=self.connect_timeout,
-            auth_timeout=self.connect_timeout,
-            banner_timeout=self.connect_timeout,
-            allow_agent=self.allow_agent,
-            look_for_keys=self.look_for_keys,
+            sock=sock,
+            **self._common_connect_args(),
         )
         self.client = client
 
     def close(self) -> None:
         if self.client:
             self.client.close()
+            self.client = None
+        if self.bastion_client:
+            self.bastion_client.close()
+            self.bastion_client = None
 
     def _validate(self, command: str, environment: EnvironmentType, approved: bool) -> None:
         action = classify_command(command)
@@ -73,8 +135,6 @@ class SSHExecutor:
         if decision.requires_approval and not approved:
             raise PermissionError(f"{decision.policy_code}: aprovação explícita necessária")
 
-        # approved=True é usado exclusivamente para ações corretivas propostas pela IA.
-        # Mesmo no modo autônomo, a ação precisa passar pela lista positiva restrita.
         if approved:
             correction = validate_correction(command)
             if not correction.allowed:

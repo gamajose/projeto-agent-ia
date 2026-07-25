@@ -1,0 +1,21 @@
+name: Checkmk Container Unhealthy
+responses:
+  - pattern: "hostname"
+    stdout: "lab-checkmk-container\n"
+  - pattern: "PRETTY_NAME|os-release"
+    stdout: "Oracle Linux Server 8.10\n"
+  - pattern: "ip -br|ifconfig"
+    stdout: "eth0 UP 172.30.0.13/24\n"
+  - pattern: "list-unit-files"
+    stdout: "check-mk-agent.socket enabled\n"
+  - pattern: "command -v"
+    stdout: "iostat=1\nmpstat=1\nsar=1\ndig=1\ntraceroute=1\ntracepath=1\ndocker=1\ncmk-agent-ctl=0\nsnmpwalk=1\nnc=1\n"
+  - pattern: "docker ps -a --filter health=unhealthy"
+    stdout: "checkmk-lab-25|checkmk/check-mk-raw:2.5.0|Up 2 hours (unhealthy)\n"
+  - pattern: "docker ps -a --format"
+    stdout: "checkmk-lab-25|checkmk/check-mk-raw:2.5.0|Up 2 hours (unhealthy)\n"
+  - pattern: "omd sites"
+    stdout: "lab\n"
+default:
+  exit_code: 0
+  stdout: "ok\n"

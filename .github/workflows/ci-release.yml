@@ -49,6 +49,7 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379/1
       GEMINI_API_KEY: test-only
       GEMINI_MODEL: gemini-2.5-flash
+      SSH_STRICT_HOST_KEY_CHECKING: "true"
 
     steps:
       - name: Baixar código
@@ -67,9 +68,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -e .
+          pip check
 
       - name: Validar sintaxe
-        run: python -m compileall -q app tests
+        run: python -m compileall -q app tests labs
+
+      - name: Validar playbooks e cenários
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          files = sorted(Path('config/playbooks').glob('*.yml')) + sorted(Path('labs/scenarios').glob('*.yml'))
+          assert files, 'nenhum playbook ou cenário encontrado'
+          for path in files:
+              value = yaml.safe_load(path.read_text(encoding='utf-8'))
+              assert isinstance(value, dict), f'{path}: YAML deve ser um objeto'
+          print(f'{len(files)} arquivos YAML validados')
+          PY
+
+      - name: Validar inicialização do CLI
+        run: agent --help >/dev/null
 
       - name: Executar testes
         run: pytest -q --junitxml=pytest-results.xml

@@ -1,0 +1,27 @@
+id: checkmk-systemd-socket-summary
+title: Checkmk - Systemd Socket Summary
+priority: 100
+profiles: [checkmk, oracle_linux, linux_generic]
+match:
+  any:
+    - "systemd\\s+socket\\s+summary"
+    - "failed\\s+socket"
+    - "socket.*failed"
+steps:
+  - tool: systemd.list_failed
+    purpose: Listar sockets e unidades em falha
+  - tool: systemd.inspect_unit
+    arguments: {unit: check-mk-agent.socket}
+    purpose: Verificar a unidade atual do agente Checkmk
+  - tool: systemd.inspect_unit
+    arguments: {unit: check_mk.socket}
+    purpose: Verificar unidade legada do agente
+  - tool: checkmk.inspect_agent_socket
+    purpose: Validar listener 6556 e resposta funcional
+  - tool: journal.read_unit
+    arguments: {unit: check-mk-agent.socket, lines: 120}
+    purpose: Consultar os logs da unidade
+allowed_corrections:
+  - systemd.recover_unit
+validation:
+  - tool: checkmk.inspect_agent_socket
