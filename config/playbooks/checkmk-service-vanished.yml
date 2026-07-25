@@ -1,0 +1,17 @@
+id: checkmk-service-vanished
+title: Checkmk - serviço vanished
+priority: 90
+profiles: [checkmk]
+match:
+  any:
+    - "vanished"
+    - "servi[cç]o.*desapareceu"
+    - "service.*missing"
+steps:
+  - tool: checkmk.discover
+    purpose: Descobrir a arquitetura atual do Checkmk
+  - tool: docker.list_unhealthy
+    purpose: Verificar se a coleta foi afetada por healthcheck
+allowed_corrections: []
+validation:
+  - tool: checkmk.discover
