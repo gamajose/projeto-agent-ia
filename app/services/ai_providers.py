@@ -106,6 +106,8 @@ PROVIDER_LABELS = {
 
 def provider_status(settings: Settings | None = None) -> list[dict[str, Any]]:
     settings = settings or get_settings()
+    omniroute_model = getattr(settings, "omniroute_model", "") or ""
+    omniroute_api_key = getattr(settings, "omniroute_api_key", None)
     return [
         {
             "kind": "provider",
@@ -139,8 +141,8 @@ def provider_status(settings: Settings | None = None) -> list[dict[str, Any]]:
             "kind": "provider",
             "name": "omniroute",
             "label": PROVIDER_LABELS["omniroute"],
-            "model": settings.omniroute_model or "modelo não definido",
-            "configured": bool(settings.omniroute_api_key and settings.omniroute_model),
+            "model": omniroute_model or "modelo não definido",
+            "configured": bool(omniroute_api_key and omniroute_model),
         },
     ]
 
@@ -167,12 +169,18 @@ def get_provider(name: str | None = None, settings: Settings | None = None) -> A
         )
     if selected == "ollama":
         return OllamaProvider(settings.ollama_model, settings.ollama_base_url)
-    if selected == "omniroute" and settings.omniroute_api_key and settings.omniroute_model:
+
+    omniroute_api_key = getattr(settings, "omniroute_api_key", None)
+    omniroute_model = getattr(settings, "omniroute_model", "") or ""
+    omniroute_base_url = getattr(
+        settings, "omniroute_base_url", "http://127.0.0.1:20128/v1"
+    )
+    if selected == "omniroute" and omniroute_api_key and omniroute_model:
         return OpenAICompatibleProvider(
             "omniroute",
-            settings.omniroute_api_key,
-            settings.omniroute_model,
-            settings.omniroute_base_url,
+            omniroute_api_key,
+            omniroute_model,
+            omniroute_base_url,
         )
     if selected not in PROVIDER_LABELS:
         raise ProviderError(f"Provedor desconhecido: {selected}.")
