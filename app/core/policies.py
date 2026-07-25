@@ -9,6 +9,7 @@ class EnvironmentType(StrEnum):
     PRODUCTION = "production"
     STANDBY = "standby"
     MONITORING = "monitoring"
+    TRAINING = "training"
     UNKNOWN = "unknown"
 
 
@@ -33,8 +34,6 @@ class PolicyDecision:
 REBOOT_RE = re.compile(r"(^|[;&|]\s*)(reboot|shutdown|poweroff|halt|init\s+6|systemctl\s+reboot)\b", re.I)
 DB_CLIENT_RE = re.compile(r"(^|[;&|]\s*)(sqlplus|rman|psql|mysql|mariadb|sqlcmd|mongosh?|redis-cli)\b", re.I)
 
-# Stop de serviço só é permitido quando o mesmo comando inicia imediatamente
-# o mesmo serviço na sequência. Operações de ciclo de vida do container são proibidas.
 PAIRED_SERVICE_STOP_START_RE = re.compile(
     r"^(?:sudo\s+)?systemctl\s+stop\s+([A-Za-z0-9_.@:-]+)\s*&&\s*(?:sudo\s+)?systemctl\s+start\s+\1$",
     re.I,
@@ -84,15 +83,28 @@ def classify_command(command: str) -> ActionType:
     return ActionType.READ_ONLY
 
 
+def environment_allows_correction(environment: EnvironmentType) -> bool:
+    """Correções automáticas existem apenas no monitoramento e no treinamento.
+
+    Produção e standby são sempre investigados e recebem propostas. Ambiente
+    desconhecido permanece somente leitura até ser classificado no inventário.
+    """
+    return environment in {EnvironmentType.MONITORING, EnvironmentType.TRAINING}
+
+
 def evaluate_action(action: ActionType, environment: EnvironmentType) -> PolicyDecision:
     if action == ActionType.DATABASE_ACCESS:
         return PolicyDecision(False, False, "Acesso a banco de dados do cliente é proibido.", "CUSTOMER_DATABASE_ACCESS_DENIED")
     if action == ActionType.HOST_REBOOT:
-        return PolicyDecision(False, False, "Reboot é proibido em todos os ambientes.", "HOST_REBOOT_DENIED")
+        return PolicyDecision(False, True, "Reboot nunca é executado pelo agente. Em treinamento, pode apenas ser proposto e exige confirmação humana externa.", "HOST_REBOOT_DENIED")
     if action == ActionType.CONTAINER_ADJUSTMENT:
         return PolicyDecision(False, False, "Stop, start, restart, kill ou remoção de container são proibidos.", "CONTAINER_LIFECYCLE_DENIED")
     if action == ActionType.DESTRUCTIVE:
-        return PolicyDecision(False, True, "Remoção, exclusão, desinstalação ou parada isolada exige autorização específica.", "DESTRUCTIVE_ACTION_DENIED")
+        return PolicyDecision(False, True, "Remoção, exclusão, desinstalação ou parada isolada não é executada automaticamente.", "DESTRUCTIVE_ACTION_DENIED")
     if action in {ActionType.SERVICE_ADJUSTMENT, ActionType.OMD_ADJUSTMENT}:
-        return PolicyDecision(True, False, "Ajuste operacional autorizado, com validação obrigatória após a execução.", "SAFE_ADJUSTMENT_ALLOWED")
+        if environment == EnvironmentType.UNKNOWN:
+            return PolicyDecision(False, True, "O ambiente precisa ser classificado antes de qualquer alteração.", "UNKNOWN_ENVIRONMENT_CHANGE_DENIED")
+        if environment in {EnvironmentType.PRODUCTION, EnvironmentType.STANDBY}:
+            return PolicyDecision(False, True, "Produção e standby permitem investigação e proposta, mas não correção automática.", "PROTECTED_ENVIRONMENT_CHANGE_DENIED")
+        return PolicyDecision(True, True, "Ajuste operacional restrito autorizado, com aprovação e validação funcional obrigatórias.", "SAFE_ADJUSTMENT_ALLOWED")
     return PolicyDecision(True, False, "Comando somente leitura permitido.", "READ_ONLY_ALLOWED")
