@@ -26,6 +26,14 @@ READ_ONLY_PATTERNS = (
     r"\bapenas\s+(?:validar|verificar|analisar|investigar|diagnosticar|consultar)\b",
 )
 
+CORRECTION_PATTERNS = (
+    r"\bcorrij(?:a|am|ir)\b",
+    r"\bresolv(?:a|am|er)\b",
+    r"\barrum(?:e|em|ar)\b",
+    r"\brecuper(?:e|em|ar)\b",
+    r"\bnormaliz(?:e|em|ar)\b",
+)
+
 
 def _normalize(text: str) -> str:
     decomposed = unicodedata.normalize("NFKD", text.casefold())
@@ -33,11 +41,10 @@ def _normalize(text: str) -> str:
 
 
 def infer_operation_intent(text: str) -> OperationIntent:
-    """Define o comportamento padrão do agente.
+    """Interpreta o texto sem transformar ambiguidade em autorização.
 
-    Quando o pedido contém verbo explícito de observação em português, o agente
-    apenas investiga e valida. Sem esses verbos, o objetivo é tratado como pedido
-    de resolução completa, com correções seguras executadas automaticamente.
+    O modo padrão é ``propose``: o agente investiga e prepara uma correção, mas
+    não a executa. Somente ``--modo corrigir`` pode autorizar a etapa corretiva.
     """
     normalized = _normalize(text or "")
     for pattern in READ_ONLY_PATTERNS:
@@ -46,11 +53,19 @@ def infer_operation_intent(text: str) -> OperationIntent:
                 mode="investigate",
                 approve=False,
                 read_only=True,
-                reason="pedido contém verbo explícito de validação em português",
+                reason="pedido contém verbo explícito de validação; operação somente leitura",
+            )
+    for pattern in CORRECTION_PATTERNS:
+        if re.search(pattern, normalized, flags=re.IGNORECASE):
+            return OperationIntent(
+                mode="propose",
+                approve=False,
+                read_only=False,
+                reason="pedido solicita correção, mas execução exige --modo corrigir e ambiente autorizado",
             )
     return OperationIntent(
-        mode="correct",
-        approve=True,
+        mode="propose",
+        approve=False,
         read_only=False,
-        reason="pedido operacional sem restrição explícita; executar correções seguras",
+        reason="pedido operacional ambíguo; investigar e propor é o comportamento seguro padrão",
     )
