@@ -1,0 +1,24 @@
+name: Checkmk Systemd Socket Summary
+responses:
+  - pattern: "hostname"
+    stdout: "lab-checkmk\n"
+  - pattern: "PRETTY_NAME|os-release"
+    stdout: "Oracle Linux Server 8.10\n"
+  - pattern: "ip -br|ifconfig"
+    stdout: "eth0 UP 172.30.0.10/24\n"
+  - pattern: "list-unit-files"
+    stdout: "check-mk-agent.socket enabled\n"
+  - pattern: "command -v"
+    stdout: "iostat=0\nmpstat=0\nsar=0\ndig=1\ntraceroute=1\ntracepath=1\ndocker=0\ncmk-agent-ctl=0\nsnmpwalk=1\nnc=1\n"
+  - pattern: "systemctl --failed"
+    stdout: "check-mk-agent.socket loaded failed failed Checkmk Agent Socket\n"
+  - pattern: "systemctl show check-mk-agent.socket"
+    stdout: "Id=check-mk-agent.socket\nLoadState=loaded\nActiveState=failed\nSubState=failed\nUnitFileState=enabled\nResult=resources\n"
+  - pattern: "6556"
+    exit_code: 1
+    stderr: "porta 6556 não está escutando\n"
+  - pattern: "journalctl"
+    stdout: "check-mk-agent.socket: Failed to listen on sockets: Address already in use\n"
+default:
+  exit_code: 0
+  stdout: "ok\n"
