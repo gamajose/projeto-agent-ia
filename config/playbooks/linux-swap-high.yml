@@ -1,0 +1,17 @@
+id: linux-swap-high
+title: Linux - utilização elevada de swap
+priority: 85
+profiles: [linux_generic, oracle_linux, checkmk]
+match:
+  any:
+    - "swap.*(high|alta|critical|warning)"
+    - "mem[oó]ria swap"
+    - "swap used"
+steps:
+  - tool: memory.swap
+    purpose: Correlacionar RAM, swap, paginação e processos
+  - tool: system.basics
+    purpose: Verificar uptime e possível evento recente
+allowed_corrections: []
+validation:
+  - tool: memory.swap
