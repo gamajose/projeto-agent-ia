@@ -92,3 +92,17 @@ class InvestigationORM(Base):
     analysis: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     diagnostics: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class ApprovalExecutionORM(Base):
+    __tablename__ = "approval_executions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investigation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    requested_by: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    actions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    results: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
