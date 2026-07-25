@@ -1,0 +1,21 @@
+name: Linux Swap High
+responses:
+  - pattern: "hostname"
+    stdout: "lab-linux-swap\n"
+  - pattern: "PRETTY_NAME|os-release"
+    stdout: "Oracle Linux Server 8.10\n"
+  - pattern: "ip -br|ifconfig"
+    stdout: "eth0 UP 172.30.0.12/24\n"
+  - pattern: "list-unit-files"
+    stdout: "check-mk-agent.socket enabled\n"
+  - pattern: "command -v"
+    stdout: "iostat=1\nmpstat=1\nsar=1\ndig=1\ntraceroute=1\ntracepath=1\ndocker=0\ncmk-agent-ctl=0\nsnmpwalk=1\nnc=1\n"
+  - pattern: "free -h"
+    stdout: "Mem: 3.6Gi 2.1Gi 300Mi 100Mi 1.2Gi 1.1Gi\nSwap: 4.0Gi 3.5Gi 512Mi\n"
+  - pattern: "vmstat"
+    stdout: "r b swpd free buff cache si so bi bo in cs us sy id wa\n1 0 3670016 307200 10240 1024000 0 0 1 2 100 200 4 2 93 1\n"
+  - pattern: "ps -eo"
+    stdout: "PID USER COMMAND %MEM RSS\n123 checkmk apache 18.0 700000\n456 checkmk cmc 12.0 450000\n"
+default:
+  exit_code: 0
+  stdout: "ok\n"
