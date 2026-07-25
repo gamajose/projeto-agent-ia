@@ -7,12 +7,22 @@ from app.services.ai_providers import ProviderError, get_provider, parse_json, p
 
 def settings(**overrides):
     values = {
-        "ai_provider": "gemini", "gemini_api_key": "secret-test", "gemini_model": "gemini-test",
-        "groq_api_key": None, "groq_model": "llama-test", "groq_base_url": "https://groq.invalid",
-        "openrouter_api_key": None, "openrouter_model": "router-test",
-        "openrouter_base_url": "https://router.invalid", "openrouter_app_name": "test",
-        "openrouter_site_url": None, "ollama_model": "local-test",
+        "ai_provider": "gemini",
+        "gemini_api_key": "secret-test",
+        "gemini_model": "gemini-test",
+        "groq_api_key": None,
+        "groq_model": "llama-test",
+        "groq_base_url": "https://groq.invalid",
+        "openrouter_api_key": None,
+        "openrouter_model": "router-test",
+        "openrouter_base_url": "https://router.invalid",
+        "openrouter_app_name": "test",
+        "openrouter_site_url": None,
+        "ollama_model": "local-test",
         "ollama_base_url": "http://127.0.0.1:11434",
+        "omniroute_api_key": "omniroute-secret-test",
+        "omniroute_model": "combo-test",
+        "omniroute_base_url": "http://127.0.0.1:20128/v1",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -35,8 +45,15 @@ def test_ollama_does_not_require_secret():
 
 def test_status_does_not_expose_keys():
     result = provider_status(settings())
-    assert {item["name"] for item in result} == {"gemini", "groq", "openrouter", "ollama"}
+    assert {item["name"] for item in result} == {
+        "gemini",
+        "groq",
+        "openrouter",
+        "ollama",
+        "omniroute",
+    }
     assert "secret-test" not in repr(result)
+    assert "omniroute-secret-test" not in repr(result)
 
 
 def test_parse_json_accepts_fenced_response():
