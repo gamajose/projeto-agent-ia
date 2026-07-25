@@ -2,7 +2,7 @@ from app.core.policies import ActionType, EnvironmentType, classify_command, eva
 
 
 def test_reboot_denied_in_all_environments():
-    for environment in (EnvironmentType.PRODUCTION, EnvironmentType.STANDBY, EnvironmentType.MONITORING):
+    for environment in EnvironmentType:
         assert not evaluate_action(ActionType.HOST_REBOOT, environment).allowed
 
 
@@ -33,7 +33,7 @@ def test_container_lifecycle_is_always_blocked():
         assert decision.policy_code == "CONTAINER_LIFECYCLE_DENIED"
 
 
-def test_service_adjustments_are_allowed():
+def test_service_adjustments_require_approval_in_monitoring():
     for command in (
         "systemctl restart check-mk-agent.socket",
         "systemctl stop check-mk-agent.socket && systemctl start check-mk-agent.socket",
@@ -42,16 +42,18 @@ def test_service_adjustments_are_allowed():
         assert action == ActionType.SERVICE_ADJUSTMENT
         decision = evaluate_action(action, EnvironmentType.MONITORING)
         assert decision.allowed
-        assert not decision.requires_approval
+        assert decision.requires_approval
 
 
-def test_omd_adjustments_are_allowed_without_container_restart():
-    for command in (
-        "docker exec checkmk-soc-25 omd restart soc",
-        "docker exec checkmk-soc-25 omd stop soc && docker exec checkmk-soc-25 omd start soc",
-    ):
-        action = classify_command(command)
-        assert action == ActionType.OMD_ADJUSTMENT
-        decision = evaluate_action(action, EnvironmentType.MONITORING)
+def test_changes_are_blocked_in_unknown_production_and_standby():
+    for environment in (EnvironmentType.UNKNOWN, EnvironmentType.PRODUCTION, EnvironmentType.STANDBY):
+        decision = evaluate_action(ActionType.SERVICE_ADJUSTMENT, environment)
+        assert not decision.allowed
+        assert decision.requires_approval
+
+
+def test_omd_adjustments_are_allowed_only_in_monitoring_or_training():
+    for environment in (EnvironmentType.MONITORING, EnvironmentType.TRAINING):
+        decision = evaluate_action(ActionType.OMD_ADJUSTMENT, environment)
         assert decision.allowed
-        assert not decision.requires_approval
+        assert decision.requires_approval
