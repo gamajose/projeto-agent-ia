@@ -40,6 +40,7 @@ def settings():
 
 def test_enqueue_never_turns_distributed_job_into_implicit_correction():
     fake = FakeRedis()
+    config = settings()
     with patch("app.services.jobs._redis", return_value=fake):
         queued = enqueue_investigation(
             "192.0.2.10",
@@ -47,13 +48,14 @@ def test_enqueue_never_turns_distributed_job_into_implicit_correction():
             environment=EnvironmentType.MONITORING,
             mode="correct",
             approve=True,
-            settings=settings(),
+            settings=config,
         )
+        stored_status = get_job(queued["job_id"], settings=config)
     assert queued["status"] == "queued"
     job = json.loads(fake.queue[0][1])
     assert job["mode"] == "propose"
     assert job["approve"] is False
-    assert get_job(queued["job_id"], settings=settings()) is None
+    assert stored_status["status"] == "queued"
 
 
 def test_worker_executes_job_and_persists_redacted_result():
