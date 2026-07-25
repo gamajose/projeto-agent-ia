@@ -8,6 +8,7 @@ from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
 from app.services.dynamic_agent import run_dynamic_investigation
 from app.services.persistence import resolve_saved_target
+from app.services.secrets import get_secret
 from app.services.ssh import SSHExecutor
 
 
@@ -56,10 +57,10 @@ def build_executor(target: ResolvedTarget, *, settings: Settings | None = None) 
         target.host,
         target.port,
         settings.ssh_default_user,
-        settings.ssh_default_password,
+        get_secret("SSH_DEFAULT_PASSWORD", settings.ssh_default_password, settings=settings),
         settings.ssh_connect_timeout,
         private_key_path=settings.ssh_private_key_path,
-        private_key_passphrase=settings.ssh_private_key_passphrase,
+        private_key_passphrase=get_secret("SSH_PRIVATE_KEY_PASSPHRASE", settings.ssh_private_key_passphrase, settings=settings),
         allow_agent=settings.ssh_allow_agent,
         look_for_keys=settings.ssh_look_for_keys,
         strict_host_key_checking=settings.ssh_strict_host_key_checking,
@@ -67,9 +68,13 @@ def build_executor(target: ResolvedTarget, *, settings: Settings | None = None) 
         bastion_host=settings.ssh_bastion_host,
         bastion_port=settings.ssh_bastion_port,
         bastion_user=settings.ssh_bastion_user,
-        bastion_password=settings.ssh_bastion_password,
+        bastion_password=get_secret("SSH_BASTION_PASSWORD", settings.ssh_bastion_password, settings=settings),
         bastion_private_key_path=settings.ssh_bastion_private_key_path,
-        bastion_private_key_passphrase=settings.ssh_bastion_private_key_passphrase,
+        bastion_private_key_passphrase=get_secret(
+            "SSH_BASTION_PRIVATE_KEY_PASSPHRASE",
+            settings.ssh_bastion_private_key_passphrase,
+            settings=settings,
+        ),
     )
 
 
