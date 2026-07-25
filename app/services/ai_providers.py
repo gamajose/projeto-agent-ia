@@ -19,6 +19,7 @@ class ProviderError(RuntimeError):
 class AIProvider(Protocol):
     name: str
     model: str
+
     def generate_json(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]: ...
 
 
@@ -41,9 +42,11 @@ class GeminiProvider:
     api_key: str
     model: str
     name: str = "gemini"
+
     def generate_json(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
         response = genai.Client(api_key=self.api_key).models.generate_content(
-            model=self.model, contents=prompt,
+            model=self.model,
+            contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1),
         )
         text = response.text or ""
@@ -57,12 +60,17 @@ class OpenAICompatibleProvider:
     model: str
     base_url: str
     headers: dict[str, str] | None = None
+
     def generate_json(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
         response = httpx.post(
             f"{self.base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}", **(self.headers or {})},
-            json={"model": self.model, "messages": [{"role": "user", "content": prompt}],
-                  "temperature": 0.1, "response_format": {"type": "json_object"}},
+            json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+            },
             timeout=90,
         )
         response.raise_for_status()
@@ -75,6 +83,7 @@ class OllamaProvider:
     model: str
     base_url: str
     name: str = "ollama"
+
     def generate_json(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
         response = httpx.post(
             f"{self.base_url.rstrip('/')}/api/generate",
@@ -86,17 +95,53 @@ class OllamaProvider:
         return parse_json(text), {"response_chars": len(text), "status_code": response.status_code}
 
 
-PROVIDER_LABELS = {"gemini": "Google Gemini", "groq": "Groq (Llama)",
-                   "openrouter": "OpenRouter", "ollama": "Ollama local"}
+PROVIDER_LABELS = {
+    "gemini": "Google Gemini",
+    "groq": "Groq (Llama)",
+    "openrouter": "OpenRouter",
+    "ollama": "Ollama local",
+    "omniroute": "OmniRoute gateway",
+}
 
 
 def provider_status(settings: Settings | None = None) -> list[dict[str, Any]]:
     settings = settings or get_settings()
     return [
-        {"name": "gemini", "label": PROVIDER_LABELS["gemini"], "model": settings.gemini_model, "configured": bool(settings.gemini_api_key)},
-        {"name": "groq", "label": PROVIDER_LABELS["groq"], "model": settings.groq_model, "configured": bool(settings.groq_api_key)},
-        {"name": "openrouter", "label": PROVIDER_LABELS["openrouter"], "model": settings.openrouter_model, "configured": bool(settings.openrouter_api_key)},
-        {"name": "ollama", "label": PROVIDER_LABELS["ollama"], "model": settings.ollama_model, "configured": True},
+        {
+            "kind": "provider",
+            "name": "gemini",
+            "label": PROVIDER_LABELS["gemini"],
+            "model": settings.gemini_model,
+            "configured": bool(settings.gemini_api_key),
+        },
+        {
+            "kind": "provider",
+            "name": "groq",
+            "label": PROVIDER_LABELS["groq"],
+            "model": settings.groq_model,
+            "configured": bool(settings.groq_api_key),
+        },
+        {
+            "kind": "provider",
+            "name": "openrouter",
+            "label": PROVIDER_LABELS["openrouter"],
+            "model": settings.openrouter_model,
+            "configured": bool(settings.openrouter_api_key),
+        },
+        {
+            "kind": "provider",
+            "name": "ollama",
+            "label": PROVIDER_LABELS["ollama"],
+            "model": settings.ollama_model,
+            "configured": True,
+        },
+        {
+            "kind": "provider",
+            "name": "omniroute",
+            "label": PROVIDER_LABELS["omniroute"],
+            "model": settings.omniroute_model or "modelo não definido",
+            "configured": bool(settings.omniroute_api_key and settings.omniroute_model),
+        },
     ]
 
 
@@ -106,15 +151,31 @@ def get_provider(name: str | None = None, settings: Settings | None = None) -> A
     if selected == "gemini" and settings.gemini_api_key:
         return GeminiProvider(settings.gemini_api_key, settings.gemini_model)
     if selected == "groq" and settings.groq_api_key:
-        return OpenAICompatibleProvider("groq", settings.groq_api_key, settings.groq_model, settings.groq_base_url)
+        return OpenAICompatibleProvider(
+            "groq", settings.groq_api_key, settings.groq_model, settings.groq_base_url
+        )
     if selected == "openrouter" and settings.openrouter_api_key:
         headers = {"X-Title": settings.openrouter_app_name}
         if settings.openrouter_site_url:
             headers["HTTP-Referer"] = settings.openrouter_site_url
-        return OpenAICompatibleProvider("openrouter", settings.openrouter_api_key, settings.openrouter_model,
-                                        settings.openrouter_base_url, headers)
+        return OpenAICompatibleProvider(
+            "openrouter",
+            settings.openrouter_api_key,
+            settings.openrouter_model,
+            settings.openrouter_base_url,
+            headers,
+        )
     if selected == "ollama":
         return OllamaProvider(settings.ollama_model, settings.ollama_base_url)
+    if selected == "omniroute" and settings.omniroute_api_key and settings.omniroute_model:
+        return OpenAICompatibleProvider(
+            "omniroute",
+            settings.omniroute_api_key,
+            settings.omniroute_model,
+            settings.omniroute_base_url,
+        )
     if selected not in PROVIDER_LABELS:
         raise ProviderError(f"Provedor desconhecido: {selected}.")
+    if selected == "omniroute":
+        raise ProviderError("OMNIROUTE_API_KEY e OMNIROUTE_MODEL precisam estar configurados.")
     raise ProviderError(f"{selected.upper()}_API_KEY não configurada.")
