@@ -1,0 +1,21 @@
+id: linux-filesystem-high
+title: Linux - filesystem ou inodes altos
+priority: 85
+profiles: [linux_generic, oracle_linux, checkmk]
+match:
+  any:
+    - "filesystem.*(high|alto|cheio|critical)"
+    - "disco.*(cheio|alto|critical)"
+    - "inode"
+    - "no space left"
+steps:
+  - tool: filesystem.usage
+    arguments: {path: /}
+  - tool: filesystem.top_directories
+    arguments: {path: /var}
+  - tool: filesystem.top_directories
+    arguments: {path: /opt}
+allowed_corrections: []
+validation:
+  - tool: filesystem.usage
+    arguments: {path: /}
