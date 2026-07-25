@@ -6,6 +6,7 @@ import httpx
 
 from app.core.settings import Settings, get_settings
 from app.services.redaction import redact_object
+from app.services.secrets import get_secret
 
 
 def publish_ticket_report(result: dict[str, Any], *, settings: Settings | None = None) -> dict[str, Any]:
@@ -37,8 +38,9 @@ def publish_ticket_report(result: dict[str, Any], *, settings: Settings | None =
         }
     )
     headers = {"Content-Type": "application/json"}
-    if settings.helpdesk_webhook_token:
-        headers["Authorization"] = f"Bearer {settings.helpdesk_webhook_token}"
+    token = get_secret("HELPDESK_WEBHOOK_TOKEN", settings.helpdesk_webhook_token, settings=settings)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
         response = httpx.post(settings.helpdesk_webhook_url, json=payload, headers=headers, timeout=20)
         response.raise_for_status()
