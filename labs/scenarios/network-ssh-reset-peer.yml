@@ -1,0 +1,21 @@
+name: SSH Reset By Peer
+responses:
+  - pattern: "hostname"
+    stdout: "lab-ssh-reset\n"
+  - pattern: "PRETTY_NAME|os-release"
+    stdout: "Oracle Linux Server 8.10\n"
+  - pattern: "ip -br|ifconfig"
+    stdout: "eth0 UP 172.30.0.14/24\n"
+  - pattern: "list-unit-files"
+    stdout: "sshd.service enabled\n"
+  - pattern: "command -v"
+    stdout: "iostat=0\nmpstat=0\nsar=0\ndig=1\ntraceroute=1\ntracepath=1\ndocker=0\ncmk-agent-ctl=0\nsnmpwalk=0\nnc=1\n"
+  - pattern: "systemctl show sshd"
+    stdout: "Id=sshd.service\nLoadState=loaded\nActiveState=active\nSubState=running\n"
+  - pattern: "journalctl -u sshd"
+    stdout: "sshd: drop connection: MaxStartups\nsshd: kex_exchange_identification: Connection closed by remote host\n"
+  - pattern: "ss -lntp"
+    stdout: "LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:((sshd,pid=900,fd=3))\n"
+default:
+  exit_code: 0
+  stdout: "ok\n"
