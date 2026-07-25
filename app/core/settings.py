@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
 
+    secret_backend: str = "env"
+    vault_addr: str | None = None
+    vault_token: str | None = None
+    vault_namespace: str | None = None
+    vault_kv_mount: str = "secret"
+    vault_secret_path: str = "agent-ia"
+    vault_verify_tls: bool = True
+    vault_cache_seconds: int = 60
+
     ssh_default_user: str = "2com"
     ssh_default_password: str | None = None
     ssh_private_key_path: str | None = None
@@ -39,6 +48,13 @@ class Settings(BaseSettings):
 
     postgres_dsn: str = Field(...)
     redis_url: str = "redis://127.0.0.1:6379/1"
+
+    agent_execution_mode: str = "inline"
+    agent_queue_name: str = "agent-ia:jobs"
+    agent_result_prefix: str = "agent-ia:result:"
+    agent_worker_name: str = "default"
+    agent_job_ttl_seconds: int = 86400
+    agent_queue_block_seconds: int = 5
 
     checkmk_api_user: str | None = None
     checkmk_api_secret: str | None = None
