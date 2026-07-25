@@ -10,6 +10,7 @@ from google import genai
 from google.genai import types
 
 from app.core.settings import Settings, get_settings
+from app.services.secrets import get_secret
 
 
 class ProviderError(RuntimeError):
@@ -104,31 +105,38 @@ PROVIDER_LABELS = {
 }
 
 
+def _secret(settings: Settings, name: str, attribute: str) -> str | None:
+    fallback = getattr(settings, attribute, None)
+    try:
+        return get_secret(name, fallback, settings=settings)
+    except AttributeError:
+        return fallback
+
+
 def provider_status(settings: Settings | None = None) -> list[dict[str, Any]]:
     settings = settings or get_settings()
     omniroute_model = getattr(settings, "omniroute_model", "") or ""
-    omniroute_api_key = getattr(settings, "omniroute_api_key", None)
     return [
         {
             "kind": "provider",
             "name": "gemini",
             "label": PROVIDER_LABELS["gemini"],
             "model": settings.gemini_model,
-            "configured": bool(settings.gemini_api_key),
+            "configured": bool(_secret(settings, "GEMINI_API_KEY", "gemini_api_key")),
         },
         {
             "kind": "provider",
             "name": "groq",
             "label": PROVIDER_LABELS["groq"],
             "model": settings.groq_model,
-            "configured": bool(settings.groq_api_key),
+            "configured": bool(_secret(settings, "GROQ_API_KEY", "groq_api_key")),
         },
         {
             "kind": "provider",
             "name": "openrouter",
             "label": PROVIDER_LABELS["openrouter"],
             "model": settings.openrouter_model,
-            "configured": bool(settings.openrouter_api_key),
+            "configured": bool(_secret(settings, "OPENROUTER_API_KEY", "openrouter_api_key")),
         },
         {
             "kind": "provider",
@@ -142,7 +150,7 @@ def provider_status(settings: Settings | None = None) -> list[dict[str, Any]]:
             "name": "omniroute",
             "label": PROVIDER_LABELS["omniroute"],
             "model": omniroute_model or "modelo não definido",
-            "configured": bool(omniroute_api_key and omniroute_model),
+            "configured": bool(_secret(settings, "OMNIROUTE_API_KEY", "omniroute_api_key") and omniroute_model),
         },
     ]
 
@@ -150,19 +158,24 @@ def provider_status(settings: Settings | None = None) -> list[dict[str, Any]]:
 def get_provider(name: str | None = None, settings: Settings | None = None) -> AIProvider:
     settings = settings or get_settings()
     selected = (name or settings.ai_provider or "gemini").strip().lower()
-    if selected == "gemini" and settings.gemini_api_key:
-        return GeminiProvider(settings.gemini_api_key, settings.gemini_model)
-    if selected == "groq" and settings.groq_api_key:
+    gemini_key = _secret(settings, "GEMINI_API_KEY", "gemini_api_key")
+    groq_key = _secret(settings, "GROQ_API_KEY", "groq_api_key")
+    openrouter_key = _secret(settings, "OPENROUTER_API_KEY", "openrouter_api_key")
+    omniroute_key = _secret(settings, "OMNIROUTE_API_KEY", "omniroute_api_key")
+
+    if selected == "gemini" and gemini_key:
+        return GeminiProvider(gemini_key, settings.gemini_model)
+    if selected == "groq" and groq_key:
         return OpenAICompatibleProvider(
-            "groq", settings.groq_api_key, settings.groq_model, settings.groq_base_url
+            "groq", groq_key, settings.groq_model, settings.groq_base_url
         )
-    if selected == "openrouter" and settings.openrouter_api_key:
+    if selected == "openrouter" and openrouter_key:
         headers = {"X-Title": settings.openrouter_app_name}
         if settings.openrouter_site_url:
             headers["HTTP-Referer"] = settings.openrouter_site_url
         return OpenAICompatibleProvider(
             "openrouter",
-            settings.openrouter_api_key,
+            openrouter_key,
             settings.openrouter_model,
             settings.openrouter_base_url,
             headers,
@@ -170,15 +183,12 @@ def get_provider(name: str | None = None, settings: Settings | None = None) -> A
     if selected == "ollama":
         return OllamaProvider(settings.ollama_model, settings.ollama_base_url)
 
-    omniroute_api_key = getattr(settings, "omniroute_api_key", None)
     omniroute_model = getattr(settings, "omniroute_model", "") or ""
-    omniroute_base_url = getattr(
-        settings, "omniroute_base_url", "http://127.0.0.1:20128/v1"
-    )
-    if selected == "omniroute" and omniroute_api_key and omniroute_model:
+    omniroute_base_url = getattr(settings, "omniroute_base_url", "http://127.0.0.1:20128/v1")
+    if selected == "omniroute" and omniroute_key and omniroute_model:
         return OpenAICompatibleProvider(
             "omniroute",
-            omniroute_api_key,
+            omniroute_key,
             omniroute_model,
             omniroute_base_url,
         )
