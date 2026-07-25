@@ -72,7 +72,16 @@ jobs:
         run: python -m compileall -q app tests
 
       - name: Executar testes
-        run: pytest -q
+        run: pytest -q --junitxml=pytest-results.xml
+
+      - name: Publicar relatório dos testes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: pytest-results.xml
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Validar versão SemVer e tag inédita
         if: github.event_name == 'pull_request'
