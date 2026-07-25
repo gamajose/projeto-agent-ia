@@ -1,0 +1,17 @@
+id: checkmk-container-unhealthy
+title: Checkmk - container unhealthy
+priority: 95
+profiles: [checkmk]
+match:
+  any:
+    - "container.*unhealthy"
+    - "docker.*unhealthy"
+    - "healthcheck"
+steps:
+  - tool: docker.list_unhealthy
+    purpose: Listar containers com healthcheck em falha
+  - tool: checkmk.discover
+    purpose: Correlacionar containers Checkmk e sites
+allowed_corrections: []
+validation:
+  - tool: docker.list_unhealthy
