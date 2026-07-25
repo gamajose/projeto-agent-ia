@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from app.core.settings import Settings, get_settings
+from app.services.secrets import get_secret
 
 
 class ApprovalError(ValueError):
@@ -31,6 +32,14 @@ def _decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
+def _approval_secret(settings: Settings) -> str | None:
+    fallback = getattr(settings, "approval_secret", None)
+    try:
+        return get_secret("APPROVAL_SECRET", fallback, settings=settings)
+    except AttributeError:
+        return fallback
+
+
 def create_approval_token(
     investigation_id: str,
     target: str,
@@ -39,7 +48,8 @@ def create_approval_token(
     settings: Settings | None = None,
 ) -> str | None:
     settings = settings or get_settings()
-    if not settings.approval_secret or not actions:
+    secret = _approval_secret(settings)
+    if not secret or not actions:
         return None
     now = int(time.time())
     payload = {
@@ -50,7 +60,7 @@ def create_approval_token(
         "exp": now + max(1, settings.approval_ttl_minutes) * 60,
     }
     encoded = _encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
-    signature = hmac.new(settings.approval_secret.encode(), encoded.encode(), hashlib.sha256).digest()
+    signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
     return f"{encoded}.{_encode(signature)}"
 
 
@@ -61,11 +71,12 @@ def verify_approval_token(
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     settings = settings or get_settings()
-    if not settings.approval_secret:
+    secret = _approval_secret(settings)
+    if not secret:
         raise ApprovalError("APPROVAL_SECRET não configurado")
     try:
         encoded, supplied_signature = token.split(".", 1)
-        expected = hmac.new(settings.approval_secret.encode(), encoded.encode(), hashlib.sha256).digest()
+        expected = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
         if not hmac.compare_digest(_decode(supplied_signature), expected):
             raise ApprovalError("assinatura da aprovação é inválida")
         payload = json.loads(_decode(encoded))
