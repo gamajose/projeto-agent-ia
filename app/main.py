@@ -11,9 +11,11 @@ from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.approved_execution import execute_approved_investigation
+from app.services.jobs import enqueue_investigation, get_job
 from app.services.persistence import get_investigation, operational_metrics
 from app.services.replay import replay_investigation
 from app.services.runner import run_target
+from app.services.secrets import get_secret, secret_backend_status
 
 
 app = FastAPI(title="Agent IA Infra", version="1.0.0")
@@ -46,6 +48,11 @@ def _require_token(supplied: str | None, expected: str | None, name: str) -> Non
         raise HTTPException(status_code=401, detail="token inválido")
 
 
+def _admin_token() -> str | None:
+    settings = get_settings()
+    return get_secret("AGENT_API_TOKEN", settings.agent_api_token, settings=settings)
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     settings = get_settings()
@@ -53,8 +60,11 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "version": app.version,
         "default_mode": settings.agent_default_mode,
+        "execution_mode": settings.agent_execution_mode,
+        "worker_pool": settings.agent_worker_name,
         "strict_host_key_checking": settings.ssh_strict_host_key_checking,
         "review_required_for_corrections": settings.ai_reviewer_required_for_corrections,
+        "secret_backend": secret_backend_status(settings),
     }
 
 
@@ -64,13 +74,29 @@ def checkmk_webhook(
     x_agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
 ) -> dict[str, Any]:
     settings = get_settings()
-    _require_token(x_agent_token, settings.checkmk_webhook_token, "CHECKMK_WEBHOOK_TOKEN")
+    webhook_token = get_secret("CHECKMK_WEBHOOK_TOKEN", settings.checkmk_webhook_token, settings=settings)
+    _require_token(x_agent_token, webhook_token, "CHECKMK_WEBHOOK_TOKEN")
     ensure_database_schema()
     mode = "correct" if payload.auto_correct and settings.checkmk_webhook_auto_correct else "propose"
     objective = (
         f"Alerta Checkmk no serviço '{payload.service}', estado {payload.state}. "
         f"Site: {payload.site or 'não informado'}. Saída do alerta: {payload.output}"
     )
+    if settings.agent_execution_mode.strip().casefold() == "queue":
+        try:
+            return enqueue_investigation(
+                payload.host,
+                objective,
+                environment=payload.environment,
+                mode=mode,
+                approve=False,
+                ssh_port=payload.ssh_port,
+                metadata={"source": "checkmk", "site": payload.site, "service": payload.service, "state": payload.state},
+                settings=settings,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"fila indisponível: {type(exc).__name__}: {exc}") from exc
+
     try:
         result = run_target(
             payload.host,
@@ -104,13 +130,27 @@ def checkmk_webhook(
     }
 
 
+@app.get("/api/jobs/{job_id}")
+def job_detail(
+    job_id: str,
+    x_agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
+) -> dict[str, Any]:
+    _require_token(x_agent_token, _admin_token(), "AGENT_API_TOKEN")
+    try:
+        result = get_job(job_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"fila indisponível: {type(exc).__name__}: {exc}") from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="job não encontrado ou expirado")
+    return result
+
+
 @app.get("/api/investigations/{investigation_id}")
 def investigation_detail(
     investigation_id: str,
     x_agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
 ) -> dict[str, Any]:
-    settings = get_settings()
-    _require_token(x_agent_token, settings.agent_api_token, "AGENT_API_TOKEN")
+    _require_token(x_agent_token, _admin_token(), "AGENT_API_TOKEN")
     ensure_database_schema()
     result = get_investigation(investigation_id, include_evidence=True)
     if not result:
@@ -125,7 +165,7 @@ def investigation_replay(
     x_agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
 ) -> dict[str, Any]:
     settings = get_settings()
-    _require_token(x_agent_token, settings.agent_api_token, "AGENT_API_TOKEN")
+    _require_token(x_agent_token, _admin_token(), "AGENT_API_TOKEN")
     ensure_database_schema()
     try:
         return replay_investigation(investigation_id, provider_name=payload.provider, settings=settings)
@@ -142,7 +182,7 @@ def investigation_approve(
     x_agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
 ) -> dict[str, Any]:
     settings = get_settings()
-    _require_token(x_agent_token, settings.agent_api_token, "AGENT_API_TOKEN")
+    _require_token(x_agent_token, _admin_token(), "AGENT_API_TOKEN")
     ensure_database_schema()
     try:
         return execute_approved_investigation(
@@ -159,8 +199,7 @@ def investigation_approve(
 def metrics_json(
     x_agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
 ) -> dict[str, Any]:
-    settings = get_settings()
-    _require_token(x_agent_token, settings.agent_api_token, "AGENT_API_TOKEN")
+    _require_token(x_agent_token, _admin_token(), "AGENT_API_TOKEN")
     ensure_database_schema()
     return operational_metrics()
 
@@ -169,8 +208,7 @@ def metrics_json(
 def metrics_prometheus(
     x_agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
 ) -> str:
-    settings = get_settings()
-    _require_token(x_agent_token, settings.agent_api_token, "AGENT_API_TOKEN")
+    _require_token(x_agent_token, _admin_token(), "AGENT_API_TOKEN")
     ensure_database_schema()
     metrics = operational_metrics()
     lines = [
