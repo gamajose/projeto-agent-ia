@@ -1,0 +1,18 @@
+id: network-ssh-reset-peer
+title: Rede - SSH reset by peer
+priority: 85
+profiles: [linux_generic, oracle_linux, checkmk]
+match:
+  any:
+    - "connection reset by peer"
+    - "kex_exchange_identification"
+    - "ssh.*reset"
+    - "ssh.*refused"
+steps:
+  - tool: network.ssh_diagnostics
+    purpose: Validar serviço, listener e mensagens de negociação
+  - tool: network.interfaces
+    purpose: Verificar interfaces e rotas do servidor
+allowed_corrections: []
+validation:
+  - tool: network.ssh_diagnostics
