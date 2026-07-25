@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 import httpx
 from google import genai
@@ -104,6 +106,22 @@ PROVIDER_LABELS = {
     "omniroute": "OmniRoute gateway",
 }
 
+_PROVIDER_OVERRIDE: ContextVar[str | None] = ContextVar("agent_ai_provider_override", default=None)
+
+
+@contextmanager
+def use_provider(name: str | None) -> Iterator[None]:
+    """Seleciona uma IA apenas no contexto atual, sem alterar o .env global."""
+    token = _PROVIDER_OVERRIDE.set((name or "").strip().lower() or None)
+    try:
+        yield
+    finally:
+        _PROVIDER_OVERRIDE.reset(token)
+
+
+def current_provider_override() -> str | None:
+    return _PROVIDER_OVERRIDE.get()
+
 
 def _secret(settings: Settings, name: str, attribute: str) -> str | None:
     fallback = getattr(settings, attribute, None)
@@ -157,7 +175,7 @@ def provider_status(settings: Settings | None = None) -> list[dict[str, Any]]:
 
 def get_provider(name: str | None = None, settings: Settings | None = None) -> AIProvider:
     settings = settings or get_settings()
-    selected = (name or settings.ai_provider or "gemini").strip().lower()
+    selected = (name or current_provider_override() or settings.ai_provider or "gemini").strip().lower()
     gemini_key = _secret(settings, "GEMINI_API_KEY", "gemini_api_key")
     groq_key = _secret(settings, "GROQ_API_KEY", "groq_api_key")
     openrouter_key = _secret(settings, "OPENROUTER_API_KEY", "openrouter_api_key")

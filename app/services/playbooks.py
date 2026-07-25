@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import yaml
 
@@ -41,6 +43,12 @@ class Playbook:
         return score + matches * 30 if matches else -1
 
 
+_PLAYBOOK_OVERRIDE: ContextVar[tuple[str, str | None]] = ContextVar(
+    "agent_playbook_override",
+    default=("auto", None),
+)
+
+
 def _playbook_dir() -> Path:
     return Path(get_settings().agent_playbook_dir).expanduser()
 
@@ -75,7 +83,45 @@ def reload_playbooks() -> tuple[Playbook, ...]:
     return load_playbooks()
 
 
+def list_playbooks() -> tuple[Playbook, ...]:
+    return load_playbooks()
+
+
+def get_playbook(playbook_id: str) -> Playbook:
+    selected = (playbook_id or "").strip()
+    for playbook in load_playbooks():
+        if playbook.id == selected:
+            return playbook
+    raise LookupError(f"playbook '{selected}' não foi encontrado em {_playbook_dir()}")
+
+
+@contextmanager
+def use_playbook(mode: str = "auto", playbook_id: str | None = None) -> Iterator[None]:
+    """Seleciona playbook automático, manual ou nenhum apenas na operação atual."""
+    normalized = (mode or "auto").strip().lower()
+    if normalized not in {"auto", "manual", "none"}:
+        raise ValueError("modo de playbook deve ser auto, manual ou none")
+    if normalized == "manual" and not playbook_id:
+        raise ValueError("playbook_id é obrigatório no modo manual")
+    if normalized == "manual":
+        get_playbook(str(playbook_id))
+    token = _PLAYBOOK_OVERRIDE.set((normalized, playbook_id))
+    try:
+        yield
+    finally:
+        _PLAYBOOK_OVERRIDE.reset(token)
+
+
+def current_playbook_selection() -> tuple[str, str | None]:
+    return _PLAYBOOK_OVERRIDE.get()
+
+
 def select_playbook(objective: str, profile: str) -> Playbook | None:
+    mode, playbook_id = current_playbook_selection()
+    if mode == "none":
+        return None
+    if mode == "manual":
+        return get_playbook(str(playbook_id))
     scored = sorted(
         ((playbook.score(objective, profile), playbook) for playbook in load_playbooks()),
         key=lambda item: item[0],

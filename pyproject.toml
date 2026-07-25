@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-ia-infra"
-version = "1.0.0"
+version = "1.1.0"
 description = "Agent IA para troubleshooting seguro de infraestrutura"
 readme = "README.md"
 requires-python = ">=3.11"
 
 [project.scripts]
-agent = "app.cli.agent:main"
+agent = "app.cli.entrypoint:main"
 agent-worker = "app.worker:main"
 
 [tool.setuptools.packages.find]
