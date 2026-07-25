@@ -1,0 +1,19 @@
+name: VPN Tunnel Down
+responses:
+  - pattern: "hostname"
+    stdout: "lab-vpn\n"
+  - pattern: "PRETTY_NAME|os-release"
+    stdout: "Oracle Linux Server 8.10\n"
+  - pattern: "ip -br|ifconfig"
+    stdout: "eth0 UP 10.17.181.1/24\ntun0 DOWN\n"
+  - pattern: "list-unit-files"
+    stdout: "openvpn-client@client.service enabled\n"
+  - pattern: "command -v"
+    stdout: "iostat=0\nmpstat=0\nsar=0\ndig=1\ntraceroute=1\ntracepath=1\ndocker=0\ncmk-agent-ctl=0\nsnmpwalk=0\nnc=1\n"
+  - pattern: "openvpn|wireguard|strongswan|charon"
+    stdout: "openvpn-client@client.service loaded failed failed OpenVPN tunnel\n"
+  - pattern: "ip route"
+    stdout: "default via 10.17.181.254 dev eth0\n"
+default:
+  exit_code: 0
+  stdout: "ok\n"
