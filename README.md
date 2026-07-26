@@ -2,7 +2,7 @@
 
 O Agent IA investiga problemas de infraestrutura, seleciona playbooks, coleta evidências via SSH, consulta casos semelhantes, propõe correções controladas, exige revisão de uma segunda IA e valida funcionalmente cada ação permitida.
 
-A versão 1.0 mantém as regras fundamentais:
+A versão atual mantém as regras fundamentais:
 
 - nunca acessar bancos de dados de clientes;
 - nunca reiniciar, desligar ou parar o host;
@@ -258,11 +258,35 @@ SSH_BASTION_PRIVATE_KEY_PASSPHRASE=
 
 O Paramiko abre um canal `direct-tcpip` pelo bastion. Nenhuma senha ou chave é armazenada no GitHub.
 
-## Provedores e Codex CLI
+## Origens dos modelos e Codex CLI
 
-`agent --menu` lista Gemini, Groq/Llama, OpenRouter, Ollama, OmniRoute e OpenAI Codex CLI.
+O `agent --menu` separa claramente a origem do modelo:
 
-O Gemini continua sendo o provedor principal padrão. O Codex CLI é uma ferramenta local interativa e não recebe automaticamente credenciais SSH do agente.
+```text
+1. OmniRoute — gateway centralizado
+2. Provedores diretos
+3. Ollama local
+```
+
+O **OmniRoute não é uma IA**. Ele usa um único token no Agent IA e encaminha a solicitação para uma rota, modelo ou combo configurado no gateway. As credenciais reais de Gemini, Groq, OpenAI, Anthropic e outros provedores permanecem no OmniRoute.
+
+Configuração mínima:
+
+```env
+OMNIROUTE_API_KEY=TOKEN_DO_ENDPOINT
+OMNIROUTE_BASE_URL=http://127.0.0.1:20128/v1
+```
+
+Rotas opcionais para o menu:
+
+```env
+OMNIROUTE_DEFAULT_ROUTE=infra-advanced
+OMNIROUTE_ROUTES=Gemini Flash=gemini-flash,Llama rápido=llama-fast,Análise avançada=infra-advanced
+```
+
+Os **provedores diretos** continuam disponíveis quando suas API keys individuais estiverem configuradas. O **Ollama** permanece como modelo local.
+
+O Codex CLI é uma ferramenta local interativa e não recebe automaticamente credenciais SSH do Agent IA.
 
 ```env
 CODEX_CLI_PATH=/home/jose/ia/codex
