@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import typer
@@ -11,7 +12,12 @@ from rich.table import Table
 
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
-from app.services.ai_providers import provider_status, use_provider
+from app.services.ai_providers import (
+    direct_provider_status,
+    gateway_status,
+    local_provider_status,
+    use_provider,
+)
 from app.services.codex_cli import CodexCLIError, codex_cli_status, launch_codex
 from app.services.interactive_session import OperationalSession
 from app.services.playbooks import list_playbooks, use_playbook
@@ -20,6 +26,14 @@ from app.services.runner import run_target
 
 ShowResult = Callable[[dict[str, Any]], None]
 PrepareDatabase = Callable[[], None]
+
+
+@dataclass(frozen=True)
+class AISelection:
+    source: str
+    provider: str
+    model: str
+    label: str
 
 
 def _choose_number(console: Console, prompt: str, *, minimum: int, maximum: int) -> int:
@@ -34,9 +48,9 @@ def _choose_number(console: Console, prompt: str, *, minimum: int, maximum: int)
         console.print(f"[red]Escolha uma opção entre {minimum} e {maximum}.[/red]")
 
 
-def _choose_provider(console: Console, settings: Settings) -> str | None:
-    rows = provider_status(settings)
-    table = Table(title="Selecione a IA da operação")
+def _choose_direct_provider(console: Console, settings: Settings) -> AISelection | None:
+    rows = direct_provider_status(settings)
+    table = Table(title="Provedores configurados diretamente no Agent IA")
     table.add_column("#", justify="right")
     table.add_column("Provedor")
     table.add_column("Modelo")
@@ -47,21 +61,149 @@ def _choose_provider(console: Console, settings: Settings) -> str | None:
             str(index),
             str(item["label"]),
             str(item["model"]),
-            "configurado" if item["configured"] else "falta configuração",
+            "configurado" if item["configured"] else "falta API key",
         )
     console.print(table)
-    choice = _choose_number(console, "IA", minimum=0, maximum=len(rows))
+    choice = _choose_number(console, "Provedor", minimum=0, maximum=len(rows))
     if choice == 0:
         return None
     selected = rows[choice - 1]
     if not selected["configured"]:
         console.print(Panel(
-            f"{selected['label']} ainda não está configurado. Ajuste a credencial/modelo antes de usar.",
+            f"{selected['label']} ainda não possui credencial direta configurada.",
             title="Provedor indisponível",
             border_style="yellow",
         ))
         return None
-    return str(selected["name"])
+    return AISelection(
+        source="direct",
+        provider=str(selected["name"]),
+        model=str(selected["model"]),
+        label=str(selected["label"]),
+    )
+
+
+def _prompt_gateway_route() -> str:
+    while True:
+        route = typer.prompt("Nome da rota, modelo ou combo configurado no OmniRoute").strip()
+        if route:
+            return route
+
+
+def _choose_omniroute(console: Console, settings: Settings) -> AISelection | None:
+    status = gateway_status(settings)
+    if not status["configured"]:
+        console.print(Panel(
+            "Configure somente OMNIROUTE_API_KEY e OMNIROUTE_BASE_URL no Agent IA. "
+            "As chaves dos provedores ficam no próprio OmniRoute.",
+            title="Gateway OmniRoute não configurado",
+            border_style="yellow",
+        ))
+        return None
+
+    routes = list(status.get("routes") or [])
+    if not routes:
+        route = _prompt_gateway_route()
+        return AISelection(
+            source="gateway",
+            provider="omniroute",
+            model=route,
+            label=f"OmniRoute → {route}",
+        )
+
+    table = Table(title="Rotas, modelos e combos do OmniRoute")
+    table.add_column("#", justify="right")
+    table.add_column("Nome")
+    table.add_column("Identificador enviado ao gateway")
+    table.add_column("Padrão")
+    table.add_row("0", "Voltar", "-", "-")
+    for index, route in enumerate(routes, 1):
+        table.add_row(
+            str(index),
+            route.label,
+            route.model,
+            "sim" if route.is_default else "",
+        )
+    manual_option = len(routes) + 1
+    table.add_row(str(manual_option), "Informar outra rota manualmente", "-", "-")
+    console.print(table)
+    choice = _choose_number(console, "Rota do OmniRoute", minimum=0, maximum=manual_option)
+    if choice == 0:
+        return None
+    if choice == manual_option:
+        route_name = _prompt_gateway_route()
+        return AISelection(
+            source="gateway",
+            provider="omniroute",
+            model=route_name,
+            label=f"OmniRoute → {route_name}",
+        )
+    route = routes[choice - 1]
+    return AISelection(
+        source="gateway",
+        provider="omniroute",
+        model=route.model,
+        label=f"OmniRoute → {route.label}",
+    )
+
+
+def _choose_local_model(console: Console, settings: Settings) -> AISelection:
+    item = local_provider_status(settings)
+    console.print(Panel(
+        f"Modelo: {item['model']}\nEndpoint: {settings.ollama_base_url}",
+        title="Ollama local",
+    ))
+    return AISelection(
+        source="local",
+        provider="ollama",
+        model=str(item["model"]),
+        label="Ollama local",
+    )
+
+
+def _choose_ai(console: Console, settings: Settings) -> AISelection | None:
+    omni = gateway_status(settings)
+    direct = direct_provider_status(settings)
+    direct_count = sum(1 for item in direct if item["configured"])
+    local = local_provider_status(settings)
+
+    while True:
+        table = Table(title="Como o Agent IA acessará o modelo")
+        table.add_column("#", justify="right")
+        table.add_column("Origem")
+        table.add_column("Comportamento")
+        table.add_column("Estado")
+        table.add_row(
+            "1",
+            "OmniRoute — gateway centralizado",
+            "Usa um token do gateway e uma rota/modelo configurada nele",
+            "configurado" if omni["configured"] else "falta token",
+        )
+        table.add_row(
+            "2",
+            "Provedores diretos",
+            "Usa as API keys individuais configuradas no Agent IA",
+            f"{direct_count}/{len(direct)} configurados",
+        )
+        table.add_row(
+            "3",
+            "Ollama local",
+            f"Usa o modelo local {local['model']}",
+            "disponível",
+        )
+        table.add_row("0", "Voltar", "-", "-")
+        console.print(table)
+        choice = _choose_number(console, "Origem da IA", minimum=0, maximum=3)
+        if choice == 0:
+            return None
+        if choice == 1:
+            selected = _choose_omniroute(console, settings)
+        elif choice == 2:
+            selected = _choose_direct_provider(console, settings)
+        else:
+            selected = _choose_local_model(console, settings)
+        if selected:
+            return selected
 
 
 def _choose_environment(console: Console) -> EnvironmentType:
@@ -133,7 +275,7 @@ def _operation_summary(
     console: Console,
     *,
     flow: str,
-    provider: str,
+    selection: AISelection,
     target: str,
     environment: EnvironmentType,
     playbook_mode: str,
@@ -141,9 +283,12 @@ def _operation_summary(
     objective: str,
     mode: str,
 ) -> None:
+    source_labels = {"gateway": "gateway", "direct": "provedor direto", "local": "modelo local"}
     body = (
         f"Fluxo: {flow}\n"
-        f"IA: {provider}\n"
+        f"Origem da IA: {source_labels.get(selection.source, selection.source)}\n"
+        f"Seleção: {selection.label}\n"
+        f"Modelo/rota: {selection.model}\n"
         f"Servidor: {target}\n"
         f"Ambiente informado: {environment.value}\n"
         f"Playbook: {playbook_id or playbook_mode}\n"
@@ -161,8 +306,8 @@ def _automatic_flow(
     show_result: ShowResult,
     prepare_database: PrepareDatabase,
 ) -> None:
-    provider = _choose_provider(console, settings)
-    if not provider:
+    selection = _choose_ai(console, settings)
+    if not selection:
         return
     playbook_mode, playbook_id = _choose_playbook(console)
     target = typer.prompt("IP, hostname ou alias do servidor").strip()
@@ -172,7 +317,7 @@ def _automatic_flow(
     _operation_summary(
         console,
         flow="validação automática",
-        provider=provider,
+        selection=selection,
         target=target,
         environment=environment,
         playbook_mode=playbook_mode,
@@ -184,7 +329,7 @@ def _automatic_flow(
         return
     prepare_database()
     try:
-        with use_provider(provider), use_playbook(playbook_mode, playbook_id):
+        with use_provider(selection.provider, selection.model), use_playbook(playbook_mode, playbook_id):
             result = run_target(
                 target,
                 objective,
@@ -201,7 +346,7 @@ def _automatic_flow(
 def _session_header(console: Console, session: OperationalSession) -> None:
     state = session.status()
     console.print(
-        f"[bold cyan][{state['provider']}][/bold cyan] "
+        f"[bold cyan][{state['provider_label']}][/bold cyan] "
         f"[bold][{state['target']}][/bold] "
         f"[{state.get('environment')}] "
         f"[playbook: {state.get('playbook_id') or state.get('playbook_mode')}] "
@@ -228,7 +373,8 @@ def _show_status(console: Console, session: OperationalSession) -> None:
     console.print(Panel(
         f"Servidor: {state.get('target')}\n"
         f"Ambiente: {state.get('environment')}\n"
-        f"IA: {state.get('provider')}\n"
+        f"Origem/IA: {state.get('provider_label')}\n"
+        f"Modelo/rota: {state.get('provider_model')}\n"
         f"Playbook: {state.get('playbook_id') or state.get('playbook_mode')}\n"
         f"Investigação: {state.get('last_investigation_id') or 'ainda não executada'}\n"
         f"Status: {analysis.get('status') or 'n/a'}\n"
@@ -271,8 +417,8 @@ def _interactive_flow(
     show_result: ShowResult,
     prepare_database: PrepareDatabase,
 ) -> None:
-    provider = _choose_provider(console, settings)
-    if not provider:
+    selection = _choose_ai(console, settings)
+    if not selection:
         return
     playbook_mode, playbook_id = _choose_playbook(console)
     target = typer.prompt("IP, hostname ou alias do servidor").strip()
@@ -282,7 +428,7 @@ def _interactive_flow(
     _operation_summary(
         console,
         flow="sessão operacional interativa",
-        provider=provider,
+        selection=selection,
         target=target,
         environment=environment,
         playbook_mode=playbook_mode,
@@ -296,7 +442,9 @@ def _interactive_flow(
     prepare_database()
     session = OperationalSession(
         target=target,
-        provider_name=provider,
+        provider_name=selection.provider,
+        provider_model=selection.model,
+        provider_label=selection.label,
         environment=environment,
         playbook_mode=playbook_mode,
         playbook_id=playbook_id,
