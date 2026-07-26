@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci-release.yml"
 DEPLOY_SCRIPT = ROOT / "deploy" / "scripts" / "deploy_release.sh"
 RELEASE_UNITS = ROOT / "deploy" / "systemd" / "release"
+AUTO_MERGE_WORKFLOW = ROOT / ".github" / "workflows" / "auto-merge.yml"
 
 
 def test_production_deploy_runs_only_after_main_validation_and_tag() -> None:
@@ -34,3 +35,10 @@ def test_release_units_follow_atomic_current_symlink() -> None:
         assert "agent-ia-production/current" in unit
         assert "EnvironmentFile=%h/.config/agent-ia/production.env" in unit
         assert "projeto-agent-ia/.env" not in unit
+
+
+def test_auto_merge_uses_workflow_run_payload_for_pull_request() -> None:
+    workflow = AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "github.event.workflow_run.pull_requests[0].number" in workflow
+    assert 'actions/runs/${RUN_ID}/pull_requests' not in workflow
