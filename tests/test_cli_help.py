@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import io
+import os
+from pathlib import Path
+import subprocess
 import sys
 
+import pytest
 from rich.console import Console
 
 from app.cli import entrypoint
 from app.cli.help_screen import render_full_help, should_show_full_help, should_show_version
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _rendered_help() -> str:
     stream = io.StringIO()
     console = Console(file=stream, force_terminal=False, color_system=None, width=180)
-    render_full_help(console, version="1.1.2")
+    render_full_help(console, version="1.1.3")
     return stream.getvalue()
 
 
@@ -71,7 +78,7 @@ def test_version_aliases() -> None:
 def test_entrypoint_routes_only_top_level_help(monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(entrypoint, "render_full_help", lambda console: calls.append("help"))
-    monkeypatch.setattr(entrypoint, "legacy_main", lambda: calls.append("legacy"))
+    monkeypatch.setattr(entrypoint, "_run_legacy_cli", lambda: calls.append("legacy"))
 
     monkeypatch.setattr(sys, "argv", ["agent", "--help"])
     entrypoint.main()
@@ -81,3 +88,30 @@ def test_entrypoint_routes_only_top_level_help(monkeypatch) -> None:
     monkeypatch.setattr(sys, "argv", ["agent", "replay", "--help"])
     entrypoint.main()
     assert calls == ["legacy"]
+
+
+@pytest.mark.parametrize(
+    ("argument", "expected"),
+    [
+        ("--version", "Agent IA Infra 1.1.3"),
+        ("--help", "AGENT IA INFRA"),
+    ],
+)
+def test_help_and_version_do_not_require_database_configuration(argument: str, expected: str) -> None:
+    environment = os.environ.copy()
+    environment.pop("POSTGRES_DSN", None)
+    environment.pop("postgres_dsn", None)
+    environment["PYTHONPATH"] = str(PROJECT_ROOT)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "app.cli.entrypoint", argument],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stdout
+    assert "postgres_dsn" not in result.stderr.lower()
