@@ -69,7 +69,10 @@ def _direct_options_table() -> Table:
         "--ambiente, -a",
         "production | standby | monitoring | training | unknown. O padrão é unknown.",
     )
-    table.add_row("--porta, -p", "Porta SSH usada para um host novo. O padrão vem do .env.")
+    table.add_row(
+        "--porta, -p",
+        "Porta SSH informada pelo operador; sobrescreve playbook, inventário e padrão do .env.",
+    )
     table.add_row(
         "--modo",
         "investigar | propor | corrigir. Sem esta opção, o Agent interpreta a intenção do texto.",
@@ -146,7 +149,10 @@ def _chat_table() -> Table:
     table.add_row("/status", "Mostra servidor, ambiente, origem/modelo, playbook e investigação atual.")
     table.add_row("/evidencias", "Reapresenta a última investigação e as evidências coletadas.")
     table.add_row("/proposta", "Mostra a proposta estruturada mais recente.")
-    table.add_row("/trocar-servidor IP", "Salva o contexto lógico e inicia uma validação no novo servidor.")
+    table.add_row(
+        "/trocar-servidor IP",
+        "Salva o contexto lógico, solicita a porta SSH e inicia uma validação no novo servidor.",
+    )
     table.add_row("/exit | exit | sair", "Encerra a sessão e volta ao menu principal.")
     table.add_row("arrume", "Solicita a execução da última proposta revisada e exige confirmação explícita.")
     table.add_row(
@@ -192,6 +198,10 @@ def _examples_table() -> Table:
     table.add_row(
         "Investigar sem alterar",
         'agent 172.27.225.31 "Systemd Socket Summary CRITICAL" --ambiente monitoring --modo investigar',
+    )
+    table.add_row(
+        "Usar porta SSH diferente de 22",
+        'agent 192.168.28.10 "validar saúde geral" --porta 2222 --modo investigar',
     )
     table.add_row(
         "Investigar e propor",
@@ -240,6 +250,7 @@ def render_full_help(console: Console, *, version: str | None = None) -> None:
     console.print(Panel(
         "No menu, o playbook pode ser escolhido automaticamente, selecionado manualmente ou ignorado.\n"
         "A opção 0 segue sem playbook e inicia obrigatoriamente em modo investigar.\n"
+        "A porta SSH pode ser digitada no menu; Enter usa playbook, inventário ou SSH_DEFAULT_PORT, nessa ordem.\n"
         "Novos arquivos .yml da pasta configurada em AGENT_PLAYBOOK_DIR aparecem no menu após o processo recarregar os playbooks.",
         title="Seleção de playbooks",
         border_style="yellow",

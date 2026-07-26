@@ -43,8 +43,14 @@ def execute_approved_investigation(
         raise ApprovedExecutionError(f"ambiente {environment.value} não permite correção automática")
 
     target_reference = str(investigation.get("target") or "")
+    approved_ssh_port = payload.get("ssh_port")
     try:
-        target = resolve_target(target_reference, environment, settings=settings)
+        target = resolve_target(
+            target_reference,
+            environment,
+            int(approved_ssh_port) if approved_ssh_port is not None else None,
+            settings=settings,
+        )
     except LookupError as exc:
         raise ApprovedExecutionError("alvo não está mais disponível no inventário") from exc
 

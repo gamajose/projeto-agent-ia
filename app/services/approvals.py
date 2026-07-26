@@ -52,6 +52,7 @@ def create_approval_token(
     target: str,
     actions: list[dict[str, Any]],
     *,
+    ssh_port: int | None = None,
     settings: Settings | None = None,
 ) -> str | None:
     settings = settings or get_settings()
@@ -66,6 +67,11 @@ def create_approval_token(
         "iat": now,
         "exp": now + max(1, settings.approval_ttl_minutes) * 60,
     }
+    if ssh_port is not None:
+        port = int(ssh_port)
+        if not 1 <= port <= 65535:
+            raise ApprovalError("porta SSH da aprovação deve estar entre 1 e 65535")
+        payload["ssh_port"] = port
     encoded = _encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
     signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
     return f"{encoded}.{_encode(signature)}"

@@ -19,7 +19,11 @@ from app.services.ai_providers import (
 )
 from app.services.codex_cli import CodexCLIError, codex_cli_status, launch_codex
 from app.services.interactive_session import OperationalSession
-from app.services.playbooks import list_playbooks, use_playbook
+from app.services.playbooks import (
+    list_playbooks,
+    selected_playbook_ssh_port,
+    use_playbook,
+)
 from app.services.provider_preflight import (
     ProviderPreflight,
     preflight_all,
@@ -285,9 +289,16 @@ def _choose_playbook(console: Console) -> tuple[str, str | None]:
     book_table.add_column("Título")
     book_table.add_column("ID")
     book_table.add_column("Perfis")
-    book_table.add_row("0", "Voltar", "-", "-")
+    book_table.add_column("Porta SSH")
+    book_table.add_row("0", "Voltar", "-", "-", "-")
     for index, book in enumerate(books, 1):
-        book_table.add_row(str(index), book.title, book.id, ", ".join(book.profiles))
+        book_table.add_row(
+            str(index),
+            book.title,
+            book.id,
+            ", ".join(book.profiles),
+            str(book.ssh_port) if book.ssh_port is not None else "automática",
+        )
     console.print(book_table)
     selected = _choose_number(console, "Número do playbook", minimum=0, maximum=len(books))
     if selected == 0:
@@ -309,6 +320,43 @@ def _choose_automatic_mode(console: Console, playbook_mode: str) -> str:
     return "investigate" if _choose_number(console, "Modo", minimum=1, maximum=2) == 1 else "propose"
 
 
+def _choose_ssh_port(
+    console: Console,
+    *,
+    settings: Settings,
+    playbook_mode: str,
+    playbook_id: str | None,
+    objective: str,
+) -> tuple[int | None, str]:
+    with use_playbook(playbook_mode, playbook_id):
+        playbook_port, selected_playbook_id = selected_playbook_ssh_port(objective)
+    if playbook_port is not None:
+        default_description = f"{playbook_port} do playbook {selected_playbook_id}"
+        summary = f"{playbook_port} (playbook {selected_playbook_id})"
+    else:
+        default_description = f"inventário do alvo ou padrão {settings.ssh_default_port}"
+        summary = f"automática (inventário ou padrão {settings.ssh_default_port})"
+
+    while True:
+        raw_port = str(
+            typer.prompt(
+                f"Porta SSH (Enter = {default_description})",
+                default="",
+                show_default=False,
+            )
+        ).strip()
+        if not raw_port:
+            return None, summary
+        try:
+            port = int(raw_port)
+        except ValueError:
+            console.print("[red]Informe uma porta SSH numérica entre 1 e 65535.[/red]")
+            continue
+        if 1 <= port <= 65535:
+            return port, f"{port} (informada pelo operador)"
+        console.print("[red]A porta SSH deve estar entre 1 e 65535.[/red]")
+
+
 def _operation_summary(
     console: Console,
     *,
@@ -318,6 +366,7 @@ def _operation_summary(
     environment: EnvironmentType,
     playbook_mode: str,
     playbook_id: str | None,
+    ssh_port_summary: str,
     objective: str,
     mode: str,
 ) -> None:
@@ -328,6 +377,7 @@ def _operation_summary(
         f"Seleção: {selection.label}\n"
         f"Modelo/rota: {selection.model}\n"
         f"Servidor: {target}\n"
+        f"Porta SSH: {ssh_port_summary}\n"
         f"Ambiente informado: {environment.value}\n"
         f"Playbook: {playbook_id or playbook_mode}\n"
         f"Modo inicial: {mode}\n"
@@ -350,6 +400,13 @@ def _automatic_flow(
     playbook_mode, playbook_id = _choose_playbook(console)
     target = typer.prompt("IP, hostname ou alias do servidor").strip()
     objective = typer.prompt("Problema ou objetivo", default="validar a saúde geral do servidor").strip()
+    ssh_port, ssh_port_summary = _choose_ssh_port(
+        console,
+        settings=settings,
+        playbook_mode=playbook_mode,
+        playbook_id=playbook_id,
+        objective=objective,
+    )
     environment = _choose_environment(console)
     mode = _choose_automatic_mode(console, playbook_mode)
     _operation_summary(
@@ -360,6 +417,7 @@ def _automatic_flow(
         environment=environment,
         playbook_mode=playbook_mode,
         playbook_id=playbook_id,
+        ssh_port_summary=ssh_port_summary,
         objective=objective,
         mode=mode,
     )
@@ -374,6 +432,7 @@ def _automatic_flow(
                 environment=environment,
                 mode=mode,
                 approve=False,
+                ssh_port=ssh_port,
                 settings=settings,
             )
         show_result(result)
@@ -386,6 +445,7 @@ def _session_header(console: Console, session: OperationalSession) -> None:
     console.print(
         f"[bold cyan][{state['provider_label']}][/bold cyan] "
         f"[bold][{state['target']}][/bold] "
+        f"[porta: {state.get('ssh_port') or 'automática'}] "
         f"[{state.get('environment')}] "
         f"[playbook: {state.get('playbook_id') or state.get('playbook_mode')}] "
         f"[sessão: {session.session_id[:8]}]"
@@ -397,7 +457,7 @@ def _show_session_help(console: Console) -> None:
         "/status — resumo da sessão\n"
         "/evidencias — reapresenta as evidências atuais\n"
         "/proposta — mostra a proposta atual\n"
-        "/trocar-servidor IP — muda o alvo mantendo o chat\n"
+        "/trocar-servidor IP — muda o alvo e permite informar outra porta SSH\n"
         "/exit, exit, sair — encerra a sessão e volta ao menu\n\n"
         "Também é possível escrever naturalmente: 'veja os logs', 'faça outra validação', "
         "'reinicie o serviço X' ou 'arrume'. Ações continuam sujeitas às políticas e à confirmação.",
@@ -410,6 +470,7 @@ def _show_status(console: Console, session: OperationalSession) -> None:
     analysis = state.get("last_analysis") or {}
     console.print(Panel(
         f"Servidor: {state.get('target')}\n"
+        f"Porta SSH: {state.get('ssh_port') or 'automática (playbook/inventário/padrão)'}\n"
         f"Ambiente: {state.get('environment')}\n"
         f"Origem/IA: {state.get('provider_label')}\n"
         f"Modelo/rota: {state.get('provider_model')}\n"
@@ -441,8 +502,15 @@ def _switch_target(console: Console, session: OperationalSession, target: str | 
     if not typer.confirm("Salvar o contexto lógico e trocar de servidor?", default=True):
         return None
     environment = _choose_environment(console)
-    session.switch_target(new_target, environment=environment)
     objective = typer.prompt("Problema inicial no novo servidor", default="validar a saúde geral do servidor").strip()
+    ssh_port, _ = _choose_ssh_port(
+        console,
+        settings=session.settings,
+        playbook_mode=session.playbook_mode,
+        playbook_id=session.playbook_id,
+        objective=objective,
+    )
+    session.switch_target(new_target, environment=environment, ssh_port=ssh_port)
     result = session.start(objective)
     console.print(Panel("Servidor alterado. O histórico da sessão foi preservado.", title="Troca concluída"))
     return result
@@ -461,6 +529,13 @@ def _interactive_flow(
     playbook_mode, playbook_id = _choose_playbook(console)
     target = typer.prompt("IP, hostname ou alias do servidor").strip()
     objective = typer.prompt("Problema ou objetivo inicial", default="validar a saúde geral do servidor").strip()
+    ssh_port, ssh_port_summary = _choose_ssh_port(
+        console,
+        settings=settings,
+        playbook_mode=playbook_mode,
+        playbook_id=playbook_id,
+        objective=objective,
+    )
     environment = _choose_environment(console)
     initial_mode = "investigate" if playbook_mode == "none" else "propose"
     _operation_summary(
@@ -471,6 +546,7 @@ def _interactive_flow(
         environment=environment,
         playbook_mode=playbook_mode,
         playbook_id=playbook_id,
+        ssh_port_summary=ssh_port_summary,
         objective=objective,
         mode=initial_mode,
     )
@@ -486,6 +562,7 @@ def _interactive_flow(
         environment=environment,
         playbook_mode=playbook_mode,
         playbook_id=playbook_id,
+        ssh_port=ssh_port,
         settings=settings,
     )
     try:

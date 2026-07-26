@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import patch
 
 from app.services.ssh import SSHExecutor
@@ -23,7 +24,7 @@ def test_connect_uses_public_key_and_ssh_agent_configuration() -> None:
     assert connect_args["hostname"] == "192.0.2.10"
     assert connect_args["username"] == "2com"
     assert connect_args["password"] is None
-    assert connect_args["key_filename"].endswith("/.ssh/id_ed25519")
+    assert Path(connect_args["key_filename"]) == Path("~/.ssh/id_ed25519").expanduser()
     assert connect_args["passphrase"] == "key-secret"
     assert connect_args["allow_agent"] is True
     assert connect_args["look_for_keys"] is True

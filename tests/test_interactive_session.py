@@ -35,17 +35,20 @@ def test_session_preserves_context_and_switches_target(monkeypatch):
         target="10.0.0.1",
         provider_name="ollama",
         environment=EnvironmentType.UNKNOWN,
+        ssh_port=2222,
         settings=SimpleNamespace(),
     )
 
     session.start("validar socket")
+    assert calls[-1][2]["ssh_port"] == 2222
     assert session.environment == EnvironmentType.MONITORING
     session.investigate_more("veja os logs")
     assert "CONTEXTO DA SESSÃO" in calls[-1][1]
     assert "serviço parado" in calls[-1][1]
 
-    session.switch_target("10.0.0.2")
+    session.switch_target("10.0.0.2", ssh_port=2200)
     assert session.target == "10.0.0.2"
+    assert session.ssh_port == 2200
     assert session.last_result is None
     assert any(turn.get("kind") == "switch_target" for turn in session.turns)
 

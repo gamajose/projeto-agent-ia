@@ -117,6 +117,20 @@ Os playbooks ficam em `config/playbooks/`:
 
 A IA pode complementar o playbook com novas ferramentas de leitura, mas somente as correções permitidas pelo playbook podem avançar para aprovação.
 
+Um playbook pode declarar a porta de conexão do alvo:
+
+```yaml
+id: servidor-noc-custom
+title: Servidor NOC com SSH alternativo
+ssh_port: 2222
+profiles: [any]
+```
+
+Também são reconhecidos `target.ssh_port`, `target.default_port` e
+`target.port_env`. A porta efetiva segue a precedência: valor informado pelo
+operador, playbook selecionado, inventário salvo e `SSH_DEFAULT_PORT` (22 por
+padrão).
+
 ## Segunda IA revisora
 
 Antes de uma correção, uma IA independente verifica:

@@ -401,7 +401,13 @@ def run_dynamic_investigation(
     approval_token = None
     if mode == "propose" and reviewer.get("approved") and classification.trusted_for_changes:
         approved_actions = [item for item in proposals if item.get("status") == "proposed"]
-        approval_token = create_approval_token(investigation_id, target, approved_actions, settings=settings)
+        approval_token = create_approval_token(
+            investigation_id,
+            target,
+            approved_actions,
+            ssh_port=executor.port,
+            settings=settings,
+        )
         if approval_token:
             analysis["approval"] = {"required": True, "expires_in_minutes": settings.approval_ttl_minutes, "token": approval_token}
             update_investigation_analysis(investigation_id, redact_object({**analysis, "approval": {"required": True, "expires_in_minutes": settings.approval_ttl_minutes}}))

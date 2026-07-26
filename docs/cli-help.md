@@ -71,6 +71,14 @@ Dentro do fluxo **Sessão interativa com servidor**:
 /exit
 ```
 
+O menu solicita a porta SSH antes da conexão. Pressionar Enter usa, nesta
+ordem, a porta do playbook, a porta salva no inventário ou
+`SSH_DEFAULT_PORT=22`. Para execução direta:
+
+```bash
+agent 192.168.28.10 "validar saúde geral" --porta 2222 --modo investigar
+```
+
 Também são aceitas solicitações em linguagem natural, como:
 
 ```text

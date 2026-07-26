@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -24,6 +25,7 @@ class Playbook:
     allowed_corrections: tuple[str, ...]
     validation_tools: tuple[dict[str, Any], ...]
     source: str
+    ssh_port: int | None = None
 
     def score(self, objective: str, profile: str) -> int:
         text = objective.casefold()
@@ -53,6 +55,27 @@ def _playbook_dir() -> Path:
     return Path(get_settings().agent_playbook_dir).expanduser()
 
 
+def _ssh_port(payload: dict[str, Any], path: Path) -> int | None:
+    raw_port = payload.get("ssh_port")
+    target = payload.get("target") or {}
+    if raw_port in (None, "") and isinstance(target, dict):
+        port_env = str(target.get("port_env") or "").strip()
+        raw_port = os.getenv(port_env) if port_env else None
+        if raw_port in (None, ""):
+            raw_port = target.get("ssh_port")
+        if raw_port in (None, ""):
+            raw_port = target.get("default_port")
+    if raw_port in (None, ""):
+        return None
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"porta SSH inválida no playbook {path}: {raw_port!r}") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError(f"porta SSH fora do intervalo 1..65535 no playbook {path}: {port}")
+    return port
+
+
 @lru_cache(maxsize=1)
 def load_playbooks() -> tuple[Playbook, ...]:
     result: list[Playbook] = []
@@ -73,6 +96,7 @@ def load_playbooks() -> tuple[Playbook, ...]:
                 allowed_corrections=tuple(str(item) for item in payload.get("allowed_corrections") or ()),
                 validation_tools=tuple(dict(item) for item in payload.get("validation") or ()),
                 source=str(path),
+                ssh_port=_ssh_port(payload, path),
             )
         )
     return tuple(result)
@@ -130,6 +154,14 @@ def select_playbook(objective: str, profile: str) -> Playbook | None:
     return scored[0][1] if scored and scored[0][0] >= 0 else None
 
 
+def selected_playbook_ssh_port(objective: str, profile: str = "unknown") -> tuple[int | None, str | None]:
+    """Retorna a porta do playbook selecionado antes da conexão, quando declarada."""
+    playbook = select_playbook(objective, profile)
+    if not playbook or playbook.ssh_port is None:
+        return None, playbook.id if playbook else None
+    return playbook.ssh_port, playbook.id
+
+
 def _render(value: Any, context: dict[str, Any]) -> Any:
     if isinstance(value, str):
         result = value
@@ -156,6 +188,7 @@ def playbook_summary(playbook: Playbook | None) -> dict[str, Any] | None:
         "id": playbook.id,
         "title": playbook.title,
         "source": playbook.source,
+        "ssh_port": playbook.ssh_port,
         "allowed_corrections": list(playbook.allowed_corrections),
         "validation": list(playbook.validation_tools),
     }
