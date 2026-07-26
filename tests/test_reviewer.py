@@ -25,17 +25,22 @@ class FakeProvider:
 
 
 def settings():
-    return SimpleNamespace(ai_reviewer_provider="groq", ai_reviewer_min_confidence=80)
+    return SimpleNamespace(
+        ai_reviewer_provider="omniroute",
+        ai_reviewer_model="auto/fast",
+        ai_reviewer_min_confidence=80,
+    )
 
 
 def test_reviewer_must_agree_with_cause_and_evidence():
-    with patch("app.services.reviewer.get_provider", return_value=FakeProvider()):
+    with patch("app.services.reviewer.get_provider", return_value=FakeProvider()) as provider_factory:
         result = review_corrections(
             {"probable_cause": "socket inativo", "status": "critical"},
             [{"tool": "systemd.recover_unit", "arguments": {"unit": "check-mk-agent.socket"}}],
             [{"tool": "systemd.inspect_unit", "stdout": "ActiveState=inactive", "exit_code": 0}],
             settings=settings(),
         )
+    provider_factory.assert_called_once_with("omniroute", settings(), "auto/fast")
     assert result["approved"] is True
     assert result["status"] == "approved"
     assert result["confidence"] == 92

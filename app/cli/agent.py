@@ -12,16 +12,19 @@ from app.core.operation import OperationMode
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
-from app.services.ai_providers import provider_status
+from app.services.ai_providers import ProviderError
 from app.services.approved_execution import ApprovedExecutionError, execute_approved_investigation
 from app.services.approvals import ApprovalError
 from app.services.codex_cli import CodexCLIError, codex_cli_status, launch_codex
 from app.services.operation_intent import infer_operation_intent
+from app.services.provider_preflight import preflight_all
 from app.services.replay import replay_investigation
 from app.services.runner import resolve_target, run_target
 
 
 app = typer.Typer(no_args_is_help=True)
+doctor_app = typer.Typer(help="Diagnósticos seguros da configuração do Agent IA.")
+app.add_typer(doctor_app, name="doctor")
 console = Console()
 
 
@@ -48,7 +51,19 @@ def _prepare_database() -> None:
 
 def _show_menu() -> None:
     settings = get_settings()
-    rows = provider_status(settings)
+    rows = [
+        {
+            "kind": "provider",
+            "name": item.provider,
+            "label": item.label,
+            "model": item.model,
+            "configured": item.selectable,
+            "selectable": item.selectable,
+            "state": item.state_label,
+            "detail": item.detail,
+        }
+        for item in preflight_all(settings)
+    ]
     codex = codex_cli_status(settings)
     rows.append({
         "kind": "tool",
@@ -56,6 +71,9 @@ def _show_menu() -> None:
         "label": "OpenAI Codex CLI",
         "model": codex.version,
         "configured": codex.available,
+        "selectable": codex.available,
+        "state": "available" if codex.available else "unavailable",
+        "detail": "Executável localizado." if codex.available else "Executável não encontrado.",
         "workdir": codex.workdir,
     })
 
@@ -72,7 +90,9 @@ def _show_menu() -> None:
             "ferramenta" if is_tool else "provedor",
             item["label"],
             item["model"],
-            ("disponível" if item["configured"] else "não encontrado") if is_tool else ("configurado" if item["configured"] else "falta configuração"),
+            ("disponível" if item["configured"] else "não encontrado")
+            if is_tool
+            else f"{item['state']} — {item['detail']}",
         )
     console.print(table)
 
@@ -91,6 +111,13 @@ def _show_menu() -> None:
             console.print(Panel(str(exc), title="Codex CLI indisponível", border_style="red"))
             raise typer.Exit(2) from exc
 
+    if not selected.get("selectable"):
+        console.print(Panel(
+            str(selected.get("detail") or "O provedor não passou no diagnóstico."),
+            title="Provedor indisponível",
+            border_style="yellow",
+        ))
+        raise typer.Exit(2)
     console.print(f"[green]Selecionado: {selected['label']} — {selected['model']}[/green]")
     console.print(f"Para usar nesta sessão: [cyan]export AI_PROVIDER={selected['name']}[/cyan]")
     console.print("Nenhuma conexão remota foi iniciada.")
@@ -250,6 +277,9 @@ def command(
             ssh_port=ssh_port,
             settings=settings,
         )
+    except ProviderError as exc:
+        console.print(Panel(str(exc), title="Provedor de IA indisponível", border_style="red"))
+        raise typer.Exit(4) from exc
     except paramiko.BadAuthenticationType as exc:
         allowed = ", ".join(exc.allowed_types or [])
         console.print(Panel(f"O servidor recusou o método de autenticação. Métodos permitidos: {allowed or 'não informados'}.", title="Falha de autenticação SSH", border_style="red"))
@@ -265,6 +295,30 @@ def command(
         raise typer.Exit(3) from exc
 
     _show_result(result)
+
+
+@doctor_app.command("ai")
+def doctor_ai() -> None:
+    """Valida provedores e modelos sem exibir credenciais."""
+    rows = preflight_all(get_settings())
+    table = Table(title="Diagnóstico dos provedores de IA")
+    table.add_column("Provider")
+    table.add_column("Estado")
+    table.add_column("Modelo/Rota")
+    table.add_column("Latência")
+    table.add_column("Detalhe")
+    for item in rows:
+        table.add_row(
+            item.label,
+            item.state_label,
+            item.model or "-",
+            f"{item.latency_ms} ms" if item.latency_ms is not None else "-",
+            item.detail,
+        )
+    console.print(table)
+    console.print(
+        "[dim]Nenhuma senha, token ou API key é exibida por este diagnóstico.[/dim]"
+    )
 
 
 @app.command("replay")

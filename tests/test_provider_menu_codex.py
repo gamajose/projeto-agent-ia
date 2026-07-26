@@ -7,18 +7,20 @@ os.environ.setdefault("POSTGRES_DSN", "sqlite+pysqlite:///:memory:")
 
 from app.cli.agent import app
 from app.services.codex_cli import CodexCLIStatus
+from app.services.provider_preflight import ProviderPreflight, ProviderState
 
 
 def test_menu_launches_codex_without_database_or_ssh():
     runner = CliRunner()
     provider_rows = [
-        {
-            "kind": "provider",
-            "name": "gemini",
-            "label": "Google Gemini",
-            "model": "gemini-test",
-            "configured": True,
-        }
+        ProviderPreflight(
+            provider="gemini",
+            label="Google Gemini",
+            state=ProviderState.AVAILABLE,
+            model="gemini-test",
+            detail="validado",
+            selectable=True,
+        )
     ]
     codex = CodexCLIStatus(
         available=True,
@@ -27,7 +29,7 @@ def test_menu_launches_codex_without_database_or_ssh():
         workdir="/home/jose/ia/codex",
     )
 
-    with patch("app.cli.agent.provider_status", return_value=provider_rows), patch(
+    with patch("app.cli.agent.preflight_all", return_value=provider_rows), patch(
         "app.cli.agent.codex_cli_status", return_value=codex
     ), patch("app.cli.agent.launch_codex", return_value=0) as launcher, patch(
         "app.cli.agent.ensure_database_schema"

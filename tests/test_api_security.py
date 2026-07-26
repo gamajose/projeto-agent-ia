@@ -10,7 +10,7 @@ def test_health_exposes_safe_operational_defaults():
     response = client.get("/health")
     assert response.status_code == 200
     body = response.json()
-    assert body["version"] == "1.0.0"
+    assert body["version"] == "1.2.0"
     assert body["default_mode"] == "propose"
     assert body["strict_host_key_checking"] is True
 

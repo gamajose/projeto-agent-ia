@@ -15,12 +15,16 @@ from app.core.settings import Settings, get_settings
 from app.services.ai_providers import (
     direct_provider_status,
     gateway_status,
-    local_provider_status,
     use_provider,
 )
 from app.services.codex_cli import CodexCLIError, codex_cli_status, launch_codex
 from app.services.interactive_session import OperationalSession
 from app.services.playbooks import list_playbooks, use_playbook
+from app.services.provider_preflight import (
+    ProviderPreflight,
+    preflight_all,
+    preflight_provider,
+)
 from app.services.runner import run_target
 
 
@@ -48,7 +52,11 @@ def _choose_number(console: Console, prompt: str, *, minimum: int, maximum: int)
         console.print(f"[red]Escolha uma opção entre {minimum} e {maximum}.[/red]")
 
 
-def _choose_direct_provider(console: Console, settings: Settings) -> AISelection | None:
+def _choose_direct_provider(
+    console: Console,
+    settings: Settings,
+    preflights: dict[str, ProviderPreflight],
+) -> AISelection | None:
     rows = direct_provider_status(settings)
     table = Table(title="Provedores configurados diretamente no Agent IA")
     table.add_column("#", justify="right")
@@ -57,20 +65,22 @@ def _choose_direct_provider(console: Console, settings: Settings) -> AISelection
     table.add_column("Estado")
     table.add_row("0", "Voltar", "-", "-")
     for index, item in enumerate(rows, 1):
+        diagnostic = preflights[str(item["name"])]
         table.add_row(
             str(index),
             str(item["label"]),
             str(item["model"]),
-            "configurado" if item["configured"] else "falta API key",
+            f"{diagnostic.state_label} — {diagnostic.detail}",
         )
     console.print(table)
     choice = _choose_number(console, "Provedor", minimum=0, maximum=len(rows))
     if choice == 0:
         return None
     selected = rows[choice - 1]
-    if not selected["configured"]:
+    diagnostic = preflights[str(selected["name"])]
+    if not diagnostic.selectable:
         console.print(Panel(
-            f"{selected['label']} ainda não possui credencial direta configurada.",
+            diagnostic.detail,
             title="Provedor indisponível",
             border_style="yellow",
         ))
@@ -90,26 +100,36 @@ def _prompt_gateway_route() -> str:
             return route
 
 
-def _choose_omniroute(console: Console, settings: Settings) -> AISelection | None:
+def _choose_omniroute(
+    console: Console,
+    settings: Settings,
+    diagnostic: ProviderPreflight,
+) -> AISelection | None:
     status = gateway_status(settings)
-    if not status["configured"]:
+    if not diagnostic.selectable:
         console.print(Panel(
-            "Configure somente OMNIROUTE_API_KEY e OMNIROUTE_BASE_URL no Agent IA. "
-            "As chaves dos provedores ficam no próprio OmniRoute.",
-            title="Gateway OmniRoute não configurado",
+            f"Motivo: {diagnostic.detail}\n\n"
+            "O Agent usa um token local do endpoint. As credenciais dos provedores "
+            "e ao menos um modelo/rota precisam estar configurados no próprio OmniRoute.\n"
+            "Para usar uma IA local sem chave, escolha Ollama.",
+            title="OmniRoute — indisponível",
             border_style="yellow",
         ))
         return None
 
-    routes = list(status.get("routes") or [])
+    valid_routes = set(diagnostic.valid_routes)
+    routes = [
+        route
+        for route in list(status.get("routes") or [])
+        if route.model in valid_routes
+    ]
     if not routes:
-        route = _prompt_gateway_route()
-        return AISelection(
-            source="gateway",
-            provider="omniroute",
-            model=route,
-            label=f"OmniRoute → {route}",
-        )
+        console.print(Panel(
+            "Nenhuma rota configurada no Agent passou na validação de /v1/models.",
+            title="OmniRoute — sem rota utilizável",
+            border_style="yellow",
+        ))
+        return None
 
     table = Table(title="Rotas, modelos e combos do OmniRoute")
     table.add_column("#", justify="right")
@@ -132,6 +152,14 @@ def _choose_omniroute(console: Console, settings: Settings) -> AISelection | Non
         return None
     if choice == manual_option:
         route_name = _prompt_gateway_route()
+        route_diagnostic = preflight_provider("omniroute", settings, route_name)
+        if not route_diagnostic.selectable:
+            console.print(Panel(
+                route_diagnostic.detail,
+                title="Rota do OmniRoute indisponível",
+                border_style="yellow",
+            ))
+            return None
         return AISelection(
             source="gateway",
             provider="omniroute",
@@ -147,25 +175,35 @@ def _choose_omniroute(console: Console, settings: Settings) -> AISelection | Non
     )
 
 
-def _choose_local_model(console: Console, settings: Settings) -> AISelection:
-    item = local_provider_status(settings)
+def _choose_local_model(
+    console: Console,
+    settings: Settings,
+    diagnostic: ProviderPreflight,
+) -> AISelection | None:
     console.print(Panel(
-        f"Modelo: {item['model']}\nEndpoint: {settings.ollama_base_url}",
+        f"Estado: {diagnostic.state_label}\n"
+        f"Modelo: {diagnostic.model or '-'}\n"
+        f"Endpoint: {settings.ollama_base_url}\n"
+        f"Detalhe: {diagnostic.detail}",
         title="Ollama local",
     ))
+    if not diagnostic.selectable:
+        return None
     return AISelection(
         source="local",
         provider="ollama",
-        model=str(item["model"]),
+        model=diagnostic.model,
         label="Ollama local",
     )
 
 
 def _choose_ai(console: Console, settings: Settings) -> AISelection | None:
-    omni = gateway_status(settings)
-    direct = direct_provider_status(settings)
-    direct_count = sum(1 for item in direct if item["configured"])
-    local = local_provider_status(settings)
+    console.print("[dim]Validando conectividade, modelos e rotas dos provedores...[/dim]")
+    diagnostics = {item.provider: item for item in preflight_all(settings)}
+    omni = diagnostics["omniroute"]
+    direct_names = ("gemini", "groq", "openrouter")
+    direct_count = sum(1 for name in direct_names if diagnostics[name].selectable)
+    local = diagnostics["ollama"]
 
     while True:
         table = Table(title="Como o Agent IA acessará o modelo")
@@ -177,19 +215,19 @@ def _choose_ai(console: Console, settings: Settings) -> AISelection | None:
             "1",
             "OmniRoute — gateway centralizado",
             "Usa um token do gateway e uma rota/modelo configurada nele",
-            "configurado" if omni["configured"] else "falta token",
+            f"{omni.state_label} — {omni.detail}",
         )
         table.add_row(
             "2",
             "Provedores diretos",
             "Usa as API keys individuais configuradas no Agent IA",
-            f"{direct_count}/{len(direct)} configurados",
+            f"{direct_count}/{len(direct_names)} disponíveis",
         )
         table.add_row(
             "3",
             "Ollama local",
-            f"Usa o modelo local {local['model']}",
-            "disponível",
+            f"Usa o modelo local {local.model or '-'}",
+            f"{local.state_label} — {local.detail}",
         )
         table.add_row("0", "Voltar", "-", "-")
         console.print(table)
@@ -197,11 +235,11 @@ def _choose_ai(console: Console, settings: Settings) -> AISelection | None:
         if choice == 0:
             return None
         if choice == 1:
-            selected = _choose_omniroute(console, settings)
+            selected = _choose_omniroute(console, settings, omni)
         elif choice == 2:
-            selected = _choose_direct_provider(console, settings)
+            selected = _choose_direct_provider(console, settings, diagnostics)
         else:
-            selected = _choose_local_model(console, settings)
+            selected = _choose_local_model(console, settings, local)
         if selected:
             return selected
 

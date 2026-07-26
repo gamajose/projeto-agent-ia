@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     agent_allow_legacy_read_commands: bool = True
 
     ai_provider: str = "gemini"
+    ai_preflight_timeout_seconds: float = Field(default=8.0, ge=1.0, le=60.0)
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash"
     groq_api_key: str | None = None
@@ -94,6 +95,7 @@ class Settings(BaseSettings):
     omniroute_model: str = ""
 
     ai_reviewer_provider: str = "groq"
+    ai_reviewer_model: str = ""
     ai_reviewer_required_for_corrections: bool = True
     ai_reviewer_min_confidence: int = 80
 

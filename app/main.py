@@ -18,7 +18,7 @@ from app.services.runner import run_target
 from app.services.secrets import get_secret, secret_backend_status
 
 
-app = FastAPI(title="Agent IA Infra", version="1.0.0")
+app = FastAPI(title="Agent IA Infra", version="1.2.0")
 
 
 class CheckmkWebhookPayload(BaseModel):

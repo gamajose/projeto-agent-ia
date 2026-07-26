@@ -280,17 +280,34 @@ OMNIROUTE_BASE_URL=http://127.0.0.1:20128/v1
 Rotas opcionais para o menu:
 
 ```env
-OMNIROUTE_DEFAULT_ROUTE=infra-advanced
-OMNIROUTE_ROUTES=Gemini Flash=gemini-flash,Llama rápido=llama-fast,Análise avançada=infra-advanced
+OMNIROUTE_DEFAULT_ROUTE=auto/coding
+OMNIROUTE_ROUTES=Código=auto/coding,Rápido=auto/fast,Econômico=auto/cheap,Inteligente=auto/smart
 ```
 
 Os **provedores diretos** continuam disponíveis quando suas API keys individuais estiverem configuradas. O **Ollama** permanece como modelo local.
 
+Antes de abrir SSH, o Agent valida o provedor selecionado. O Ollama precisa
+responder, possuir exatamente o modelo configurado e produzir JSON válido. O
+OmniRoute precisa ter token local, rota configurada, endpoint acessível e a rota
+precisa aparecer em `/v1/models`.
+
+```bash
+agent doctor ai
+```
+
+O diagnóstico mostra estado, modelo/rota, latência e motivo sem exibir
+credenciais. O tempo limite pode ser ajustado com:
+
+```env
+AI_PREFLIGHT_TIMEOUT_SECONDS=8
+```
+
 O Codex CLI é uma ferramenta local interativa e não recebe automaticamente credenciais SSH do Agent IA.
 
 ```env
-CODEX_CLI_PATH=/home/jose/ia/codex
-CODEX_WORKDIR=/home/jose/ia/codex
+CODEX_CLI_PATH=/home/jose/.local/bin/codex
+CODEX_WORKDIR=/home/jose/projeto-agent-ia
+CODEX_HOME=/home/jose/.codex
 ```
 
 Veja [`docs/omniroute-codex.md`](docs/omniroute-codex.md).

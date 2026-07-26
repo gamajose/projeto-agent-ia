@@ -72,6 +72,7 @@ class OpenAICompatibleProvider:
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
+                "stream": False,
                 "response_format": {"type": "json_object"},
             },
             timeout=90,

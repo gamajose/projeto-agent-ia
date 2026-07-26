@@ -8,6 +8,7 @@ from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
 from app.services.dynamic_agent import run_dynamic_investigation
 from app.services.persistence import resolve_saved_target
+from app.services.provider_preflight import require_selected_provider
 from app.services.secrets import get_secret
 from app.services.ssh import SSHExecutor
 
@@ -89,6 +90,7 @@ def run_target(
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     settings = settings or get_settings()
+    require_selected_provider(settings)
     target = resolve_target(reference, environment, ssh_port, settings=settings)
     executor = build_executor(target, settings=settings)
     try:
