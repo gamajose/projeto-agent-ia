@@ -29,6 +29,14 @@ def test_deploy_requires_exact_sha_and_keeps_secrets_outside_checkout() -> None:
     assert "git reset --hard" not in script
 
 
+def test_virtualenv_is_created_at_its_final_non_relocated_path() -> None:
+    script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'STAGE_DIR="$RELEASE_DIR"' in script
+    assert 'mv "$STAGE_DIR" "$RELEASE_DIR"' not in script
+    assert 'mktemp -d "$RELEASES_DIR/' not in script
+
+
 def test_release_units_follow_atomic_current_symlink() -> None:
     for unit_name in ("agent-ia-api.service", "agent-ia-worker@.service"):
         unit = (RELEASE_UNITS / unit_name).read_text(encoding="utf-8")
