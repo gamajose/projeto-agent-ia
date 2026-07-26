@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 
+import typer
 from rich.console import Console
 
 from app.cli.help_screen import (
@@ -19,14 +20,22 @@ def _run_menu() -> None:
     """Carrega dependências operacionais apenas quando o menu for solicitado."""
     from app.cli.agent import _prepare_database, _show_result
     from app.cli.interactive_menu import run_main_menu
+    from app.cli.menu_control import MenuExitRequested, global_menu_exit
     from app.core.settings import get_settings
 
-    run_main_menu(
-        console=console,
-        show_result=_show_result,
-        prepare_database=_prepare_database,
-        settings=get_settings(),
-    )
+    try:
+        with global_menu_exit():
+            console.print(
+                "[dim]Saída global: q, \\q, exit, sair, esc, Ctrl+C ou Ctrl+D.[/dim]"
+            )
+            run_main_menu(
+                console=console,
+                show_result=_show_result,
+                prepare_database=_prepare_database,
+                settings=get_settings(),
+            )
+    except (MenuExitRequested, EOFError, KeyboardInterrupt, typer.Abort):
+        console.print("[yellow]Menu encerrado pelo operador.[/yellow]")
 
 
 def _run_legacy_cli() -> None:
@@ -68,6 +77,7 @@ def main() -> None:
     if tuple(args) == ("doctor", "ai"):
         _run_ai_doctor()
         return
+
     if tuple(args) in {("doctor", "ai", "--help"), ("doctor", "ai", "-h")}:
         _run_ai_doctor_help()
         return
