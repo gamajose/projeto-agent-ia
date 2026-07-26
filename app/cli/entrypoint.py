@@ -25,6 +25,9 @@ def _run_menu() -> None:
 
     try:
         with global_menu_exit():
+            console.print(
+                "[dim]Saída global: q, \\q, exit, sair, esc, Ctrl+C ou Ctrl+D.[/dim]"
+            )
             run_main_menu(
                 console=console,
                 show_result=_show_result,
