@@ -82,9 +82,16 @@ class Settings(BaseSettings):
     openrouter_site_url: str | None = None
     ollama_model: str = "llama3.2"
     ollama_base_url: str = "http://127.0.0.1:11434"
+
+    # OmniRoute é um gateway: o Agent precisa apenas do token e da URL.
+    # A rota/modelo é selecionada no menu, por OMNIROUTE_DEFAULT_ROUTE ou
+    # pela lista opcional OMNIROUTE_ROUTES. OMNIROUTE_MODEL permanece como
+    # alias legado para instalações anteriores.
     omniroute_api_key: str | None = None
-    omniroute_model: str = ""
     omniroute_base_url: str = "http://127.0.0.1:20128/v1"
+    omniroute_default_route: str = ""
+    omniroute_routes: str = ""
+    omniroute_model: str = ""
 
     ai_reviewer_provider: str = "groq"
     ai_reviewer_required_for_corrections: bool = True
