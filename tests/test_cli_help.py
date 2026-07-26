@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def _rendered_help() -> str:
     stream = io.StringIO()
     console = Console(file=stream, force_terminal=False, color_system=None, width=180)
-    render_full_help(console, version="1.1.3")
+    render_full_help(console, version="1.2.0")
     return stream.getvalue()
 
 
@@ -30,6 +30,7 @@ def test_full_help_lists_all_operational_commands() -> None:
         "agent ALVO [PROBLEMA...]",
         "agent replay UUID",
         "agent approve UUID TOKEN",
+        "agent doctor ai",
         "agent --version",
         "--ambiente, -a",
         "--porta, -p",
@@ -90,10 +91,32 @@ def test_entrypoint_routes_only_top_level_help(monkeypatch) -> None:
     assert calls == ["legacy"]
 
 
+def test_entrypoint_routes_ai_doctor_before_legacy_parser(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(entrypoint, "_run_ai_doctor", lambda: calls.append("doctor"))
+    monkeypatch.setattr(entrypoint, "_run_legacy_cli", lambda: calls.append("legacy"))
+    monkeypatch.setattr(sys, "argv", ["agent", "doctor", "ai"])
+
+    entrypoint.main()
+
+    assert calls == ["doctor"]
+
+
+def test_entrypoint_routes_ai_doctor_help(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(entrypoint, "_run_ai_doctor_help", lambda: calls.append("doctor-help"))
+    monkeypatch.setattr(entrypoint, "_run_legacy_cli", lambda: calls.append("legacy"))
+    monkeypatch.setattr(sys, "argv", ["agent", "doctor", "ai", "--help"])
+
+    entrypoint.main()
+
+    assert calls == ["doctor-help"]
+
+
 @pytest.mark.parametrize(
     ("argument", "expected"),
     [
-        ("--version", "Agent IA Infra 1.1.3"),
+        ("--version", "Agent IA Infra 1.2.0"),
         ("--help", "AGENT IA INFRA"),
     ],
 )

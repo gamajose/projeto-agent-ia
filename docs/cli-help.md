@@ -32,12 +32,23 @@ Os subcomandos mantêm a ajuda própria do Typer:
 ```bash
 agent replay --help
 agent approve --help
+agent doctor ai
 agent-worker --help
 agent-worker run --help
 agent-worker job --help
 ```
 
 O entrypoint só intercepta a ajuda no nível principal. Assim, `agent replay --help` continua descrevendo os argumentos de replay, em vez de abrir o guia geral.
+
+## Diagnóstico das IAs
+
+```bash
+agent doctor ai
+```
+
+O comando verifica configuração, conectividade, modelo ou rota, resposta JSON
+e latência. Ollama e OmniRoute só ficam selecionáveis no menu quando passam no
+preflight. Senhas, tokens e API keys nunca são exibidos.
 
 ## Versão instalada
 

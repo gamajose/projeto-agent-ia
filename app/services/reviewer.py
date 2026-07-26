@@ -70,7 +70,8 @@ def review_corrections(
         }
     )
     try:
-        provider = get_provider(provider_name, settings)
+        reviewer_model = (getattr(settings, "ai_reviewer_model", "") or "").strip() or None
+        provider = get_provider(provider_name, settings, reviewer_model)
         result, metadata = provider.generate_json(REVIEW_RULES + "\n\nDADOS:\n" + json.dumps(payload, ensure_ascii=False, default=str))
         confidence = int(result.get("confidence") or 0)
         approved = bool(result.get("approved")) and bool(result.get("agrees_with_probable_cause")) and bool(result.get("evidence_supported")) and confidence >= settings.ai_reviewer_min_confidence

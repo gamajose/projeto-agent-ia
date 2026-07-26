@@ -29,7 +29,14 @@ def _encode(data: bytes) -> str:
 
 
 def _decode(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    decoded = base64.b64decode(
+        value + "=" * (-len(value) % 4),
+        altchars=b"-_",
+        validate=True,
+    )
+    if not hmac.compare_digest(_encode(decoded), value):
+        raise ValueError("codificação base64 não canônica")
+    return decoded
 
 
 def _approval_secret(settings: Settings) -> str | None:

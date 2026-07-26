@@ -65,16 +65,20 @@ Depois abra `http://127.0.0.1:20128` no navegador local.
 ```env
 OMNIROUTE_API_KEY=CHAVE_DO_ENDPOINT
 OMNIROUTE_BASE_URL=http://127.0.0.1:20128/v1
+OMNIROUTE_DEFAULT_ROUTE=auto/coding
 ```
 
-Isso é suficiente para o OmniRoute aparecer como gateway configurado no `agent --menu`. A rota pode ser informada durante a operação.
+O token local não substitui a credencial do provedor conectado ao OmniRoute.
+Para o gateway ficar selecionável, ele precisa possuir ao menos um
+provedor/modelo conectado e a rota configurada precisa aparecer em
+`GET /v1/models`.
 
 ## Rotas exibidas no menu
 
 Para cadastrar atalhos amigáveis:
 
 ```env
-OMNIROUTE_ROUTES=Gemini Flash=gemini-flash,Llama rápido=llama-fast,Análise avançada=infra-advanced
+OMNIROUTE_ROUTES=Código=auto/coding,Rápido=auto/fast,Econômico=auto/cheap,Inteligente=auto/smart
 ```
 
 Formato de cada item:
@@ -93,7 +97,7 @@ Quando `AI_PROVIDER=omniroute` for usado pela API, worker, webhook ou CLI direta
 
 ```env
 AI_PROVIDER=omniroute
-OMNIROUTE_DEFAULT_ROUTE=infra-advanced
+OMNIROUTE_DEFAULT_ROUTE=auto/coding
 ```
 
 `OMNIROUTE_MODEL` continua aceito como compatibilidade com versões anteriores, mas o nome recomendado agora é `OMNIROUTE_DEFAULT_ROUTE`.
@@ -123,9 +127,9 @@ Essas variáveis só são necessárias quando o operador escolhe **Provedores di
 O caminho pode apontar para o executável ou para a pasta de instalação:
 
 ```env
-CODEX_CLI_PATH=/home/jose/ia/codex
-CODEX_WORKDIR=/home/jose/ia/codex
-CODEX_HOME=
+CODEX_CLI_PATH=/home/jose/.local/bin/codex
+CODEX_WORKDIR=/home/jose/projeto-agent-ia
+CODEX_HOME=/home/jose/.codex
 ```
 
 Quando `CODEX_CLI_PATH` aponta para uma pasta, o Agent procura automaticamente:
@@ -150,8 +154,12 @@ find /home/jose/ia/codex -maxdepth 4 -type f -name codex -perm -u+x 2>/dev/null
 Depois execute:
 
 ```bash
+agent doctor ai
 agent --menu
 ```
+
+O diagnóstico consulta `/v1/models` e impede a seleção de token ausente,
+gateway indisponível ou rota inexistente. Nenhum valor de token é mostrado.
 
 Escolha **OpenAI Codex CLI** para abrir a ferramenta no `CODEX_WORKDIR` configurado. O Codex não recebe automaticamente credenciais nem uma sessão SSH do Agent IA.
 

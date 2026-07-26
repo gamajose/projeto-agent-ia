@@ -55,6 +55,7 @@ def _command_table() -> Table:
         escape("agent approve UUID TOKEN [--por NOME]"),
         "Executa uma proposta assinada, revisada e ainda válida.",
     )
+    table.add_row("agent doctor ai", "Valida conectividade, modelos e rotas dos provedores sem exibir segredos.")
     table.add_row("agent --help | -h | help", "Exibe este guia operacional completo.")
     table.add_row("agent --version | -V | version", "Exibe a versão instalada do Agent IA.")
     return table
@@ -170,6 +171,7 @@ def _support_table() -> Table:
     table.add_row("agent-worker run --once", "Processa no máximo um job e encerra.")
     table.add_row("agent-worker run --bloqueio SEGUNDOS", "Define o tempo de espera por um job da fila.")
     table.add_row("agent-worker job UUID", "Consulta o estado de um job distribuído.")
+    table.add_row("agent doctor ai", "Diagnostica provedores, modelos e rotas antes de abrir SSH.")
     table.add_row("python -m app.db.init_db", "Cria ou atualiza as estruturas necessárias no banco do Agent IA.")
     table.add_row(
         "uvicorn app.main:app --host 0.0.0.0 --port 8080",
@@ -224,7 +226,8 @@ def render_full_help(console: Console, *, version: str | None = None) -> None:
         "agent --menu\n"
         "agent ALVO [PROBLEMA...] [--ambiente AMBIENTE] [--porta PORTA] [--modo MODO]\n"
         "agent replay UUID [--provedor IA]\n"
-        "agent approve UUID TOKEN [--por NOME]"
+        "agent approve UUID TOKEN [--por NOME]\n"
+        "agent doctor ai"
     )
     console.print(Panel(escape(usage), title="Uso rápido"))
 
@@ -262,6 +265,7 @@ def render_full_help(console: Console, *, version: str | None = None) -> None:
         "Ajuda específica:\n"
         "  agent replay --help\n"
         "  agent approve --help\n"
+        "  agent doctor ai --help\n"
         "  agent-worker --help\n"
         "  agent-worker run --help\n"
         "  agent-worker job --help",
