@@ -8,6 +8,7 @@ from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
 from app.services.dynamic_agent import run_dynamic_investigation
 from app.services.persistence import resolve_saved_target
+from app.services.playbooks import selected_playbook_ssh_port
 from app.services.provider_preflight import require_selected_provider
 from app.services.secrets import get_secret
 from app.services.ssh import SSHExecutor
@@ -35,9 +36,13 @@ def resolve_target(
     environment: EnvironmentType = EnvironmentType.UNKNOWN,
     ssh_port: int | None = None,
     *,
+    playbook_ssh_port: int | None = None,
     settings: Settings | None = None,
 ) -> ResolvedTarget:
     settings = settings or get_settings()
+    explicit_port = _validate_ssh_port(ssh_port, "informada")
+    selected_playbook_port = _validate_ssh_port(playbook_ssh_port, "do playbook")
+    default_port = _validate_ssh_port(settings.ssh_default_port, "padrão")
     saved = resolve_saved_target(reference, None if environment == EnvironmentType.UNKNOWN else environment.value)
     if saved:
         resolved_environment = environment
@@ -46,10 +51,30 @@ def resolve_target(
                 resolved_environment = EnvironmentType(saved.get("environment") or EnvironmentType.UNKNOWN.value)
             except ValueError:
                 resolved_environment = EnvironmentType.UNKNOWN
-        return ResolvedTarget(reference, str(saved["vpn_ip"]), int(saved["ssh_port"]), resolved_environment, saved)
+        saved_port = _validate_ssh_port(saved.get("ssh_port"), "do inventário")
+        port = explicit_port or selected_playbook_port or saved_port or default_port
+        return ResolvedTarget(reference, str(saved["vpn_ip"]), port, resolved_environment, saved)
     if _is_ip(reference):
-        return ResolvedTarget(reference, reference, int(ssh_port or settings.ssh_default_port), environment, None)
+        return ResolvedTarget(
+            reference,
+            reference,
+            explicit_port or selected_playbook_port or default_port,
+            environment,
+            None,
+        )
     raise LookupError(f"alvo '{reference}' não existe no inventário; na primeira execução informe o IP VPN")
+
+
+def _validate_ssh_port(value: Any, source: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"porta SSH {source} é inválida: {value!r}") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError(f"porta SSH {source} deve estar entre 1 e 65535")
+    return port
 
 
 def build_executor(target: ResolvedTarget, *, settings: Settings | None = None) -> SSHExecutor:
@@ -91,7 +116,16 @@ def run_target(
 ) -> dict[str, Any]:
     settings = settings or get_settings()
     require_selected_provider(settings)
-    target = resolve_target(reference, environment, ssh_port, settings=settings)
+    playbook_ssh_port, _ = selected_playbook_ssh_port(
+        objective.strip() or "validar a saúde geral do servidor"
+    )
+    target = resolve_target(
+        reference,
+        environment,
+        ssh_port,
+        playbook_ssh_port=playbook_ssh_port,
+        settings=settings,
+    )
     executor = build_executor(target, settings=settings)
     try:
         executor.connect()

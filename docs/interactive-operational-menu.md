@@ -20,10 +20,43 @@ O menu principal oferece:
 2. Escolher playbook automático, manual ou nenhum.
 3. Informar IP, hostname ou alias.
 4. Informar o problema.
-5. Declarar ou deixar o ambiente como desconhecido.
-6. Conferir o resumo e iniciar.
+5. Informar a porta SSH ou pressionar Enter.
+6. Declarar ou deixar o ambiente como desconhecido.
+7. Conferir o resumo e iniciar.
 
 A seleção de provedor e playbook vale somente para a operação atual. O `.env` não é alterado e outras execuções concorrentes não são afetadas.
+
+## Porta SSH
+
+O menu solicita a porta tanto na validação automática quanto na sessão
+interativa. Ao trocar de servidor dentro da sessão, a porta também é solicitada.
+
+- digitando `2222`, a conexão usa `2222`;
+- pressionando Enter, o Agent tenta a porta declarada no playbook;
+- sem porta no playbook, usa a porta do alvo salvo no inventário;
+- para um IP novo sem outra configuração, usa `SSH_DEFAULT_PORT`, cujo padrão é
+  `22`.
+
+A precedência completa é:
+
+```text
+porta informada > playbook > inventário > SSH_DEFAULT_PORT
+```
+
+No CLI direto, use:
+
+```bash
+agent 192.168.28.10 "validar saúde geral" --porta 2222 --modo investigar
+```
+
+Nos playbooks, a forma recomendada é:
+
+```yaml
+ssh_port: 2222
+```
+
+Playbooks de inventário existentes também podem usar `target.ssh_port`,
+`target.default_port` ou `target.port_env`.
 
 ## Sem playbook
 

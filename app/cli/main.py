@@ -222,7 +222,8 @@ def _resolve_auto_target(reference: str, environment: EnvironmentType, default_p
     if saved:
         saved_env = EnvironmentType(saved.get("environment") or EnvironmentType.UNKNOWN.value)
         effective_env = environment if environment != EnvironmentType.UNKNOWN else saved_env
-        return saved, str(saved["vpn_ip"]), int(saved["ssh_port"]), effective_env
+        resolved_port = int(ssh_port if ssh_port is not None else saved["ssh_port"])
+        return saved, str(saved["vpn_ip"]), resolved_port, effective_env
     if _is_ip(reference):
         return None, reference, int(ssh_port or default_port), environment
     console.print(f"[red]Alvo '{reference}' não localizado no inventário. Para um host novo, informe o IP VPN.[/red]")
@@ -260,8 +261,9 @@ def _resolve_host(reference: str, environment: EnvironmentType, default_port: in
     env_value = None if environment == EnvironmentType.UNKNOWN else environment.value
     saved = resolve_saved_target(reference, env_value)
     if saved and saved.get("source") == "host":
-        console.print(f"[green]Host localizado no banco:[/green] {saved['vpn_ip']}:{saved['ssh_port']}")
-        return str(saved["vpn_ip"]), int(saved["ssh_port"])
+        resolved_port = int(port if port is not None else saved["ssh_port"])
+        console.print(f"[green]Host localizado no banco:[/green] {saved['vpn_ip']}:{resolved_port}")
+        return str(saved["vpn_ip"]), resolved_port
     if _is_ip(reference):
         return reference, int(port or default_port)
     console.print(f"[red]Host '{reference}' não localizado. Use o IP VPN na primeira execução.[/red]")

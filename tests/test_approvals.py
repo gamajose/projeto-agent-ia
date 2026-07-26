@@ -11,10 +11,17 @@ def settings():
 
 def test_approval_token_is_bound_to_investigation_and_actions():
     actions = [{"tool": "systemd.recover_unit", "arguments": {"unit": "check-mk-agent.socket", "action": "start"}, "status": "proposed"}]
-    token = create_approval_token("11111111-1111-1111-1111-111111111111", "monitor", actions, settings=settings())
+    token = create_approval_token(
+        "11111111-1111-1111-1111-111111111111",
+        "monitor",
+        actions,
+        ssh_port=2222,
+        settings=settings(),
+    )
     assert token
     payload = verify_approval_token(token, actions, settings=settings())
     assert payload["investigation_id"] == "11111111-1111-1111-1111-111111111111"
+    assert payload["ssh_port"] == 2222
 
 
 def test_changed_actions_invalidate_approval():
