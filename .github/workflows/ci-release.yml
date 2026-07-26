@@ -12,9 +12,18 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: SHA completo já integrado na main
+        required: true
+        type: string
 
 permissions:
   contents: read
+
+env:
+  RELEASE_SHA: ${{ inputs.release_sha || github.sha }}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -57,9 +66,22 @@ jobs:
       SSH_STRICT_HOST_KEY_CHECKING: "true"
 
     steps:
+      - name: Validar SHA solicitado para release
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          MAIN_SHA="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | awk '{print $1}')"
+          if [ "$RELEASE_SHA" != "$MAIN_SHA" ]; then
+            echo "::error::O SHA solicitado não é o HEAD atual da main."
+            exit 1
+          fi
+
       - name: Baixar código
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
 
       - name: Configurar Python
@@ -135,7 +157,9 @@ jobs:
 
   tag:
     name: Criar tag da versão
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'workflow_dispatch'
     needs: validate
     runs-on: ubuntu-latest
     permissions:
@@ -145,6 +169,7 @@ jobs:
       - name: Baixar código e tags
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
 
       - name: Configurar Python
@@ -174,7 +199,9 @@ jobs:
 
   deploy:
     name: Deploy produção
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'workflow_dispatch'
     needs:
       - validate
       - tag
@@ -192,12 +219,12 @@ jobs:
       - name: Baixar exatamente o commit validado
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 1
           persist-credentials: false
 
       - name: Preparar, validar e ativar release
         env:
-          AGENT_DEPLOY_APPROVED_SHA: ${{ github.sha }}
-          AGENT_RELEASE_SHA: ${{ github.sha }}
+          AGENT_DEPLOY_APPROVED_SHA: ${{ env.RELEASE_SHA }}
+          AGENT_RELEASE_SHA: ${{ env.RELEASE_SHA }}
         run: bash deploy/scripts/deploy_release.sh --activate

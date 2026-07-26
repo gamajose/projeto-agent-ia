@@ -12,8 +12,11 @@ def test_production_deploy_runs_only_after_main_validation_and_tag() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "ready_for_review" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "release_sha:" in workflow
+    assert 'O SHA solicitado não é o HEAD atual da main.' in workflow
     assert "needs:\n      - validate\n      - tag" in workflow
-    assert "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in workflow
+    assert "github.event_name == 'workflow_dispatch'" in workflow
     assert "runs-on: [self-hosted, Linux, X64, agent-ia-prod]" in workflow
     assert "bash deploy/scripts/deploy_release.sh --activate" in workflow
     assert "pull_request_target" not in workflow
@@ -24,6 +27,7 @@ def test_deploy_requires_exact_sha_and_keeps_secrets_outside_checkout() -> None:
 
     assert 'AGENT_DEPLOY_APPROVED_SHA:-}" == "$RELEASE_SHA"' in script
     assert 'GITHUB_REF:-}" == "refs/heads/main"' in script
+    assert 'GITHUB_EVENT_NAME:-}" == "workflow_dispatch"' in script
     assert "--exclude='.env'" in script
     assert "$HOME/.config/agent-ia/production.env" in script
     assert "git reset --hard" not in script
@@ -50,3 +54,6 @@ def test_auto_merge_uses_workflow_run_payload_for_pull_request() -> None:
 
     assert "github.event.workflow_run.pull_requests[0].number" in workflow
     assert 'actions/runs/${RUN_ID}/pull_requests' not in workflow
+    assert "actions: write" in workflow
+    assert "gh workflow run ci-release.yml" in workflow
+    assert 'release_sha="$MERGE_SHA"' in workflow

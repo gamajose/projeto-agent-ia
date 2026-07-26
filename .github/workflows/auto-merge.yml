@@ -8,6 +8,7 @@ on:
       - completed
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -91,6 +92,7 @@ jobs:
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Fazer merge por squash
+        id: merge
         if: steps.pr.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -101,13 +103,18 @@ jobs:
           set -euo pipefail
 
           for attempt in 1 2 3; do
-            if gh api \
+            if MERGE_RESPONSE="$(gh api \
               --method PUT \
               "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge" \
               -f merge_method=squash \
-              -f sha="$HEAD_SHA" \
-              --jq '.message'; then
-              exit 0
+              -f sha="$HEAD_SHA")"; then
+              if jq -e '.merged == true' <<< "$MERGE_RESPONSE" >/dev/null; then
+                MERGE_SHA="$(jq -r '.sha' <<< "$MERGE_RESPONSE")"
+                jq -r '.message' <<< "$MERGE_RESPONSE"
+                echo "sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              jq -r '.message' <<< "$MERGE_RESPONSE" >&2
             fi
 
             if [ "$attempt" -eq 3 ]; then
@@ -117,6 +124,29 @@ jobs:
 
             sleep 5
           done
+
+      - name: Disparar CI, tag e deploy da main
+        if: steps.pr.outputs.eligible == 'true' && steps.merge.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_SHA: ${{ steps.merge.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for attempt in 1 2 3; do
+            MAIN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.commit.sha')"
+            if [ "$MAIN_SHA" = "$MERGE_SHA" ]; then
+              gh workflow run ci-release.yml \
+                --ref main \
+                -f release_sha="$MERGE_SHA"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::A main não aponta para o SHA integrado $MERGE_SHA."
+          exit 1
 
       - name: Remover branch integrada
         if: steps.pr.outputs.eligible == 'true'
