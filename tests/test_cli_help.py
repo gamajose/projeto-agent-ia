@@ -12,7 +12,7 @@ from app.cli.help_screen import render_full_help, should_show_full_help, should_
 def _rendered_help() -> str:
     stream = io.StringIO()
     console = Console(file=stream, force_terminal=False, color_system=None, width=180)
-    render_full_help(console, version="1.1.1")
+    render_full_help(console, version="1.1.2")
     return stream.getvalue()
 
 
@@ -31,6 +31,10 @@ def test_full_help_lists_all_operational_commands() -> None:
         "investigar",
         "propor",
         "corrigir",
+        "OmniRoute — gateway centralizado",
+        "Provedores diretos",
+        "Ollama local",
+        "OMNIROUTE_API_KEY",
         "/status",
         "/evidencias",
         "/proposta",
