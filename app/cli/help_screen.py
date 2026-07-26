@@ -4,6 +4,7 @@ from importlib import metadata
 from typing import Sequence
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -43,15 +44,15 @@ def _command_table() -> Table:
     table.add_column("Finalidade")
     table.add_row("agent --menu", "Abre o menu com validação automática, sessão interativa e Codex CLI.")
     table.add_row(
-        "agent ALVO [PROBLEMA...]",
+        escape("agent ALVO [PROBLEMA...]"),
         "Executa uma investigação direta no IP, hostname ou alias informado.",
     )
     table.add_row(
-        "agent replay UUID [--provedor IA]",
+        escape("agent replay UUID [--provedor IA]"),
         "Reanalisa evidências já gravadas sem abrir uma nova conexão SSH.",
     )
     table.add_row(
-        "agent approve UUID TOKEN [--por NOME]",
+        escape("agent approve UUID TOKEN [--por NOME]"),
         "Executa uma proposta assinada, revisada e ainda válida.",
     )
     table.add_row("agent --help | -h | help", "Exibe este guia operacional completo.")
@@ -196,13 +197,13 @@ def render_full_help(console: Console, *, version: str | None = None) -> None:
         border_style="cyan",
     ))
 
-    console.print(Panel(
+    usage = (
         "agent --menu\n"
         "agent ALVO [PROBLEMA...] [--ambiente AMBIENTE] [--porta PORTA] [--modo MODO]\n"
         "agent replay UUID [--provedor IA]\n"
-        "agent approve UUID TOKEN [--por NOME]",
-        title="Uso rápido",
-    ))
+        "agent approve UUID TOKEN [--por NOME]"
+    )
+    console.print(Panel(escape(usage), title="Uso rápido"))
 
     console.print(_command_table())
     console.print(_direct_options_table())
