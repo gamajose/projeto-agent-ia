@@ -202,9 +202,10 @@ prepare_release() {
   fi
   [[ ! -e "$RELEASE_DIR" ]] || fail "release incompleta já existe: $RELEASE_DIR"
 
-  STAGE_DIR="$(mktemp -d "$RELEASES_DIR/.${RELEASE_SHA}.XXXXXX")"
+  STAGE_DIR="$RELEASE_DIR"
+  mkdir "$STAGE_DIR"
   chmod 700 "$STAGE_DIR"
-  log "copiando checkout para staging"
+  log "copiando checkout para a release final"
   tar \
     --exclude='.git' \
     --exclude='.env' \
@@ -230,7 +231,6 @@ prepare_release() {
   printf '%s\n' "$RELEASE_SHA" >"$STAGE_DIR/.release-sha"
   printf '%s\n' "$RELEASE_VERSION" >"$STAGE_DIR/.release-version"
   touch "$STAGE_DIR/.ready"
-  mv "$STAGE_DIR" "$RELEASE_DIR"
   STAGE_DIR=""
   log "release preparada em $RELEASE_DIR"
 }

@@ -116,7 +116,7 @@ def test_entrypoint_routes_ai_doctor_help(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("argument", "expected"),
     [
-        ("--version", "Agent IA Infra 1.2.0"),
+        ("--version", "Agent IA Infra 1.2.1"),
         ("--help", "AGENT IA INFRA"),
     ],
 )
