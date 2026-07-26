@@ -111,7 +111,8 @@ if [[ "$MODE" == "activate" ]]; then
   [[ "${AGENT_DEPLOY_APPROVED_SHA:-}" == "$RELEASE_SHA" ]] ||
     fail "ativação exige AGENT_DEPLOY_APPROVED_SHA idêntico à release"
   if [[ "${GITHUB_ACTIONS:-false}" == "true" ]]; then
-    [[ "${GITHUB_EVENT_NAME:-}" == "push" ]] || fail "Actions só pode ativar em evento push"
+    [[ "${GITHUB_EVENT_NAME:-}" == "push" || "${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" ]] ||
+      fail "Actions só pode ativar em evento push ou workflow_dispatch"
     [[ "${GITHUB_REF:-}" == "refs/heads/main" ]] || fail "Actions só pode ativar a main"
     [[ "${GITHUB_SHA:-}" == "$RELEASE_SHA" ]] || fail "GITHUB_SHA difere da release"
   fi
