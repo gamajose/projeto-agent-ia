@@ -26,6 +26,27 @@ O menu principal oferece:
 
 A seleção de provedor e playbook vale somente para a operação atual. O `.env` não é alterado e outras execuções concorrentes não são afetadas.
 
+## Saída global e interrupções
+
+Em qualquer campo do assistente ou submenu, os comandos abaixo encerram o menu de forma limpa:
+
+```text
+q
+\q
+quit
+exit
+sair
+encerrar
+fechar
+esc
+```
+
+`Ctrl+C` e `Ctrl+D` também encerram o menu sem traceback. Entradas comuns inválidas continuam exibindo a mensagem de validação correspondente e o operador pode tentar novamente.
+
+A palavra `esc` deve ser digitada e confirmada com Enter. A tecla física Esc isolada não é interpretada de forma portátil pelo prompt de linha atual.
+
+O número `0` mantém o comportamento específico de cada tela: volta em submenus que oferecem essa opção e encerra quando selecionado no menu principal.
+
 ## Porta SSH
 
 O menu solicita a porta tanto na validação automática quanto na sessão
@@ -106,7 +127,7 @@ Pedidos de alteração específica, como `reinicie o serviço X`, não são exec
 /exit
 ```
 
-Também são aceitos `exit`, `sair`, `encerrar`, `finalizar` e `desconectar servidor`.
+Também são aceitos `exit`, `sair`, `encerrar`, `finalizar` e `desconectar servidor` dentro do chat operacional.
 
 ## Aprovação
 
