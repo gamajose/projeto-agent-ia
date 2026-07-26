@@ -43,14 +43,13 @@ def test_ollama_does_not_require_secret():
     assert get_provider("ollama", settings()).model == "local-test"
 
 
-def test_status_does_not_expose_keys():
+def test_status_does_not_expose_keys_or_mix_gateway_with_providers():
     result = provider_status(settings())
     assert {item["name"] for item in result} == {
         "gemini",
         "groq",
         "openrouter",
         "ollama",
-        "omniroute",
     }
     assert "secret-test" not in repr(result)
     assert "omniroute-secret-test" not in repr(result)

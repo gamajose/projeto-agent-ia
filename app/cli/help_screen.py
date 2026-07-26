@@ -114,12 +114,35 @@ def _menu_table() -> Table:
     return table
 
 
+def _ai_sources_table() -> Table:
+    table = Table(title="Origem dos modelos no menu", show_lines=True)
+    table.add_column("Origem", style="bold cyan")
+    table.add_column("O que representa")
+    table.add_column("Configuração no Agent IA")
+    table.add_row(
+        "OmniRoute — gateway centralizado",
+        "Encaminha para modelos, rotas e combos configurados no próprio gateway.",
+        "OMNIROUTE_API_KEY e OMNIROUTE_BASE_URL. A rota é escolhida no menu.",
+    )
+    table.add_row(
+        "Provedores diretos",
+        "Gemini, Groq e OpenRouter acessados sem gateway.",
+        "Exigem as API keys individuais correspondentes.",
+    )
+    table.add_row(
+        "Ollama local",
+        "Modelo executado localmente.",
+        "OLLAMA_MODEL e OLLAMA_BASE_URL.",
+    )
+    return table
+
+
 def _chat_table() -> Table:
     table = Table(title="Comandos da sessão interativa", show_lines=True)
     table.add_column("Comando ou frase", style="bold blue", no_wrap=True)
     table.add_column("Ação")
     table.add_row("/ajuda", "Mostra os comandos disponíveis dentro do chat operacional.")
-    table.add_row("/status", "Mostra servidor, ambiente, IA, playbook e investigação atual.")
+    table.add_row("/status", "Mostra servidor, ambiente, origem/modelo, playbook e investigação atual.")
     table.add_row("/evidencias", "Reapresenta a última investigação e as evidências coletadas.")
     table.add_row("/proposta", "Mostra a proposta estruturada mais recente.")
     table.add_row("/trocar-servidor IP", "Salva o contexto lógico e inicia uma validação no novo servidor.")
@@ -209,6 +232,7 @@ def render_full_help(console: Console, *, version: str | None = None) -> None:
     console.print(_direct_options_table())
     console.print(_mode_table())
     console.print(_menu_table())
+    console.print(_ai_sources_table())
 
     console.print(Panel(
         "No menu, o playbook pode ser escolhido automaticamente, selecionado manualmente ou ignorado.\n"
