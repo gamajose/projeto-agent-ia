@@ -19,6 +19,8 @@ from app.services.session_intent import SessionIntent, classify_session_message
 class OperationalSession:
     target: str
     provider_name: str
+    provider_model: str | None = None
+    provider_label: str | None = None
     environment: EnvironmentType = EnvironmentType.UNKNOWN
     ssh_port: int | None = None
     playbook_mode: str = "auto"
@@ -46,6 +48,9 @@ class OperationalSession:
             "hostname": result.get("hostname"),
             "environment": (result.get("environment_classification") or {}).get("environment") or self.environment.value,
             "profile": result.get("profile"),
+            "provider": self.provider_name,
+            "provider_model": self.provider_model,
+            "provider_label": self.provider_label or self.provider_name,
             "playbook": result.get("playbook"),
             "last_investigation_id": result.get("investigation_id"),
             "last_analysis": {
@@ -64,6 +69,8 @@ class OperationalSession:
         state.update({
             "active": self.active,
             "provider": self.provider_name,
+            "provider_model": self.provider_model,
+            "provider_label": self.provider_label or self.provider_name,
             "playbook_mode": self.playbook_mode,
             "playbook_id": self.playbook_id,
             "ssh_port": self.ssh_port,
@@ -77,7 +84,7 @@ class OperationalSession:
         return result
 
     def _run(self, objective: str, *, mode: str) -> dict[str, Any]:
-        with use_provider(self.provider_name), self._selection():
+        with use_provider(self.provider_name, self.provider_model), self._selection():
             return run_target(
                 self.target,
                 objective,
@@ -140,7 +147,7 @@ uma nova validação.
             ensure_ascii=False,
             default=str,
         )
-        provider = get_provider(self.provider_name, self.settings)
+        provider = get_provider(self.provider_name, self.settings, self.provider_model)
         payload, _ = provider.generate_json(redact_text(prompt))
         reply = str(payload.get("reply") or "Não foi possível formular uma resposta com as evidências atuais.")
         self._remember("assistant", reply, kind="answer")
