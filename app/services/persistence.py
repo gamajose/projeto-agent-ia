@@ -266,6 +266,6 @@ def operational_metrics() -> dict[str, Any]:
             "investigations_total": total,
             "average_duration_ms": round(average_duration, 2),
             "by_status": {status: int(count) for status, count in status_rows},
-            "by_mode": {mode: int(count) for status, count in mode_rows},
+            "by_mode": {mode: int(count) for mode, count in mode_rows},
             "approval_executions": {status: int(count) for status, count in approval_rows},
         }
