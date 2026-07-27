@@ -97,7 +97,7 @@ def recurrence_history(*, checkmk_host: str, service_name: str, days: int = 30) 
     with SessionLocal() as session:
         rows = session.scalars(
             select(IncidentORM)
-            .where(InvestigationORM.checkmk_host == checkmk_host, InvestigationORM.service_name == service_name, InvestigationORM.detected_at >= since)
+            .where(IncidentORM.checkmk_host == checkmk_host, IncidentORM.service_name == service_name, IncidentORM.detected_at >= since)
             .order_by(IncidentORM.detected_at.desc()).limit(20)
         ).all()
         return [{
@@ -266,6 +266,6 @@ def operational_metrics() -> dict[str, Any]:
             "investigations_total": total,
             "average_duration_ms": round(average_duration, 2),
             "by_status": {status: int(count) for status, count in status_rows},
-            "by_mode": {mode: int(count) for mode, count in mode_rows},
+            "by_mode": {mode: int(count) for status, count in mode_rows},
             "approval_executions": {status: int(count) for status, count in approval_rows},
         }
