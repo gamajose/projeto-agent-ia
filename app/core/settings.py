@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,10 +39,28 @@ class Settings(BaseSettings):
     ssh_strict_host_key_checking: bool = True
     ssh_known_hosts_path: str = "~/.ssh/known_hosts"
 
-    ssh_bastion_host: str | None = None
-    ssh_bastion_port: int = 22
-    ssh_bastion_user: str | None = None
-    ssh_bastion_password: str | None = None
+    # O servidor VPN funciona como bastion SSH. Os nomes SSH_SRV_VPN_*
+    # preservam compatibilidade com os ambientes já usados pelos operadores.
+    ssh_bastion_host: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SSH_BASTION_HOST", "SSH_SRV_VPN_IP", "SSH_SRV_VPN"),
+    )
+    ssh_bastion_port: int = Field(
+        default=22,
+        validation_alias=AliasChoices("SSH_BASTION_PORT", "SSH_SRV_VPN_PORT", "SSH_PORT_SRV_VPN"),
+    )
+    ssh_bastion_user: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SSH_BASTION_USER", "SSH_SRV_VPN_USER", "SSH_USER_SRV_VPN"),
+    )
+    ssh_bastion_password: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "SSH_BASTION_PASSWORD",
+            "SSH_SRV_VPN_SENHA",
+            "SSH_PASSWORD_SRV_VPN",
+        ),
+    )
     ssh_bastion_private_key_path: str | None = None
     ssh_bastion_private_key_passphrase: str | None = None
 
