@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from contextlib import contextmanager
@@ -48,6 +49,10 @@ class Playbook:
 _PLAYBOOK_OVERRIDE: ContextVar[tuple[str, str | None]] = ContextVar(
     "agent_playbook_override",
     default=("auto", None),
+)
+_CURRENT_OBJECTIVE: ContextVar[str] = ContextVar(
+    "agent_playbook_objective",
+    default="",
 )
 
 
@@ -141,6 +146,7 @@ def current_playbook_selection() -> tuple[str, str | None]:
 
 
 def select_playbook(objective: str, profile: str) -> Playbook | None:
+    _CURRENT_OBJECTIVE.set(objective or "")
     mode, playbook_id = current_playbook_selection()
     if mode == "none":
         return None
@@ -162,6 +168,18 @@ def selected_playbook_ssh_port(objective: str, profile: str = "unknown") -> tupl
     return playbook.ssh_port, playbook.id
 
 
+def _objective_addresses(objective: str) -> list[str]:
+    addresses: list[str] = []
+    for candidate in re.findall(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])", objective or ""):
+        try:
+            address = str(ipaddress.ip_address(candidate))
+        except ValueError:
+            continue
+        if address not in addresses:
+            addresses.append(address)
+    return addresses
+
+
 def _render(value: Any, context: dict[str, Any]) -> Any:
     if isinstance(value, str):
         result = value
@@ -178,7 +196,25 @@ def _render(value: Any, context: dict[str, Any]) -> Any:
 def render_steps(playbook: Playbook | None, context: dict[str, Any]) -> list[dict[str, Any]]:
     if not playbook:
         return []
-    return [_render(dict(step), context) for step in playbook.steps]
+
+    render_context = dict(context)
+    addresses = _objective_addresses(_CURRENT_OBJECTIVE.get())
+    render_context.setdefault("objective_ip", addresses[0] if addresses else "")
+    render_context.setdefault("objective_ips", ",".join(addresses))
+
+    rendered: list[dict[str, Any]] = []
+    for source_step in playbook.steps:
+        required_context = source_step.get("requires_context")
+        required_keys = (
+            [str(required_context)]
+            if isinstance(required_context, str)
+            else [str(item) for item in (required_context or [])]
+        )
+        if any(not str(render_context.get(key) or "").strip() for key in required_keys):
+            continue
+        step = {key: value for key, value in source_step.items() if key != "requires_context"}
+        rendered.append(_render(step, render_context))
+    return rendered
 
 
 def playbook_summary(playbook: Playbook | None) -> dict[str, Any] | None:
