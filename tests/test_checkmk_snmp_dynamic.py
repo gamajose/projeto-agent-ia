@@ -1,8 +1,19 @@
 from pathlib import Path
 
+import pytest
+
 from app.core.settings import get_settings
-from app.services.playbooks import reload_playbooks, render_steps, select_playbook
+from app.services.playbooks import load_playbooks, reload_playbooks, render_steps, select_playbook
 from app.services.tool_registry import resolve_tool
+
+
+@pytest.fixture(autouse=True)
+def clear_settings_and_playbook_caches():
+    get_settings.cache_clear()
+    load_playbooks.cache_clear()
+    yield
+    get_settings.cache_clear()
+    load_playbooks.cache_clear()
 
 
 def _load_snmp_playbook(monkeypatch, objective: str):
