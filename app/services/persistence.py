@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -10,6 +9,7 @@ from sqlalchemy.orm import aliased
 
 from app.db.base import SessionLocal
 from app.db.models import ApprovalExecutionORM, HostORM, IncidentORM, InvestigationORM, MonitoringMappingORM
+from app.services.operational_memory import build_operational_memory, search_operational_cases
 
 
 def upsert_host(*, host_type: str, vpn_ip: str, ssh_port: int, hostname: str, os_name: str,
@@ -155,34 +155,19 @@ def recent_investigations(*, target: str, hostname: str | None, limit: int = 5) 
         return [_investigation_dict(row) for row in rows]
 
 
-def _tokens(text: str) -> set[str]:
-    return {item for item in re.findall(r"[a-z0-9_.:-]{3,}", (text or "").casefold()) if item not in {"para", "com", "uma", "dos", "das", "server", "servidor"}}
-
-
 def similar_investigations(*, objective: str, profile: str | None, target: str | None = None, limit: int = 5) -> list[dict[str, Any]]:
-    wanted = _tokens(objective)
-    with SessionLocal() as session:
-        rows = session.scalars(select(InvestigationORM).order_by(InvestigationORM.created_at.desc()).limit(100)).all()
-        scored: list[tuple[float, InvestigationORM]] = []
-        for row in rows:
-            current = _tokens(row.objective + " " + str((row.analysis or {}).get("probable_cause") or ""))
-            overlap = len(wanted & current) / max(1, len(wanted | current))
-            score = overlap
-            if profile and row.profile == profile:
-                score += 0.25
-            if target and row.target == target:
-                score += 0.20
-            if row.status != "inconclusive":
-                score += 0.05
-            if score >= 0.20:
-                scored.append((score, row))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        result = []
-        for score, row in scored[:limit]:
-            item = _investigation_dict(row)
-            item["similarity"] = round(min(score, 1.0), 3)
-            result.append(item)
-        return result
+    """Recupera somente casos úteis ou verificados da memória operacional.
+
+    O resultado já traz a causa, o playbook, as ferramentas que funcionaram e a
+    confiança do caso. Investigações inconclusivas deixam de contaminar o prompt.
+    """
+    return search_operational_cases(
+        objective=objective,
+        profile=profile,
+        playbook_id=None,
+        target=target,
+        limit=limit,
+    )
 
 
 def get_investigation(investigation_id: str, *, include_evidence: bool = True) -> dict[str, Any] | None:
@@ -209,16 +194,36 @@ def update_investigation_analysis(investigation_id: str, analysis: dict[str, Any
         return True
 
 
+def _playbook_id_from_plans(plans: list[dict[str, Any]]) -> str | None:
+    for plan in plans:
+        playbook = plan.get("playbook") or {}
+        if isinstance(playbook, dict) and playbook.get("id"):
+            return str(playbook["id"])
+    return None
+
+
 def save_investigation(*, target: str, hostname: str | None, objective: str, environment: str,
                        mode: str, status: str, confidence: int, profile: str | None,
                        model: str | None, duration_ms: int, plans: list, evidence: list,
                        assessments: list, analysis: dict, diagnostics: list) -> str:
+    analysis_payload = dict(analysis or {})
+    analysis_payload["operational_memory"] = build_operational_memory(
+        objective=objective,
+        profile=profile,
+        playbook_id=_playbook_id_from_plans(plans),
+        analysis=analysis_payload,
+        evidence=evidence,
+        corrections=list(analysis_payload.get("corrections") or []),
+        target=target,
+        hostname=hostname,
+    )
+
     with SessionLocal() as session:
         row = InvestigationORM(
             target=target, hostname=hostname, objective=objective, environment=environment,
             mode=mode, status=status, confidence=confidence, profile=profile, model=model,
             duration_ms=duration_ms, plans=plans, evidence=evidence, assessments=assessments,
-            analysis=analysis, diagnostics=diagnostics,
+            analysis=analysis_payload, diagnostics=diagnostics,
         )
         session.add(row)
         session.commit()
