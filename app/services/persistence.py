@@ -97,7 +97,7 @@ def recurrence_history(*, checkmk_host: str, service_name: str, days: int = 30) 
     with SessionLocal() as session:
         rows = session.scalars(
             select(IncidentORM)
-            .where(IncidentORM.checkmk_host == checkmk_host, IncidentORM.service_name == service_name, IncidentORM.detected_at >= since)
+            .where(InvestigationORM.checkmk_host == checkmk_host, InvestigationORM.service_name == service_name, InvestigationORM.detected_at >= since)
             .order_by(IncidentORM.detected_at.desc()).limit(20)
         ).all()
         return [{
@@ -156,18 +156,19 @@ def recent_investigations(*, target: str, hostname: str | None, limit: int = 5) 
 
 
 def similar_investigations(*, objective: str, profile: str | None, target: str | None = None, limit: int = 5) -> list[dict[str, Any]]:
-    """Recupera somente casos úteis ou verificados da memória operacional.
-
-    O resultado já traz a causa, o playbook, as ferramentas que funcionaram e a
-    confiança do caso. Investigações inconclusivas deixam de contaminar o prompt.
-    """
-    return search_operational_cases(
+    """Recupera somente casos úteis ou verificados da memória operacional."""
+    cases = search_operational_cases(
         objective=objective,
         profile=profile,
         playbook_id=None,
         target=target,
         limit=limit,
     )
+    for case in cases:
+        case.setdefault("status", case.get("outcome_status"))
+        case.setdefault("objective", case.get("symptom"))
+        case.setdefault("analysis", {"probable_cause": case.get("probable_cause")})
+    return cases
 
 
 def get_investigation(investigation_id: str, *, include_evidence: bool = True) -> dict[str, Any] | None:
