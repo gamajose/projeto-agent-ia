@@ -1,23 +1,25 @@
 name: vpn-access-inventory
-version: 1
-description: Inventário declarativo para acesso manual e auditável ao servidor VPN.
+version: 2
+description: Inventário declarativo para acesso manual e auditável ao servidor que controla as VPNs.
 safety:
   connect_automatically: false
   execute_remote_commands: false
   access_localhost: false
   print_secrets: false
 target:
-  host_env: SSH_SRV_VPN
+  host_env: SSH_SRV_VPN_IP
   default_host: 10.17.181.1
-  user_env: SSH_USER_SRV_VPN
-  password_env: SSH_PASSWORD_SRV_VPN
-  port_env: SSH_PORT_SRV_VPN
+  user_env: SSH_SRV_VPN_USER
+  password_env: SSH_SRV_VPN_SENHA
+  port_env: SSH_SRV_VPN_PORT
   default_port: 22
 workflow:
   - validate_required_environment
-  - request_explicit_operator_confirmation
-  - establish_ssh_session_manually
+  - connect_to_vpn_control_server
+  - open_direct_tcpip_channel_to_client_vpn_ip
+  - authenticate_on_client_server
   - collect_only_operator_approved_read_only_evidence
 notes:
+  - O Agent entra primeiro no servidor de controle das VPNs e abre a conexão ao IP VPN do cliente por esse canal SSH.
   - A senha permanece exclusivamente no ambiente e nunca deve ser registrada em logs.
-  - Este arquivo não contém executor e não inicia conexões.
+  - Os aliases SSH_BASTION_* continuam aceitos para compatibilidade.

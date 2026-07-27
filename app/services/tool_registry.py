@@ -113,6 +113,13 @@ def describe_tools() -> list[dict[str, Any]]:
         ToolDescriptor("checkmk.discover", "monitoring", "Descobre containers Checkmk e sites OMD.", False, {}),
         ToolDescriptor("checkmk.find_omd_service", "monitoring", "Localiza e consulta um serviço em todos os sites OMD.", False, {"service": "serviço OMD"}),
         ToolDescriptor("checkmk.find_host", "monitoring", "Procura um host nos sites Checkmk.", False, {"host": "hostname Checkmk"}),
+        ToolDescriptor(
+            "checkmk.diagnose_snmp_address",
+            "monitoring",
+            "Localiza no Checkmk o host que usa um IP SNMP e executa cmk -vvn dentro do site OMD correspondente.",
+            False,
+            {"address": "IP do equipamento SNMP"},
+        ),
         ToolDescriptor("checkmk.inspect_agent_socket", "monitoring", "Valida socket, listener 6556 e resposta local do agente.", False, {}),
         ToolDescriptor("network.ssh_diagnostics", "network", "Valida sshd, listener e logs de negociação.", False, {}),
         ToolDescriptor("vpn.inspect", "network", "Valida interfaces, rotas e processos de VPN conhecidos.", False, {}),
@@ -175,6 +182,34 @@ def resolve_tool(name: str, arguments: dict[str, Any] | None = None) -> ToolPlan
         inner = f"cmk -D {shlex.quote(host)}"
         command = "for c in $(docker ps --format '{{.Names}}' 2>/dev/null | grep -Ei 'checkmk|check-mk'); do for s in $(docker exec \"$c\" omd sites --bare 2>/dev/null); do echo \"CONTAINER=$c SITE=$s HOST=" + host + "\"; docker exec \"$c\" su - \"$s\" -c " + shlex.quote(inner) + " 2>/dev/null && break; done; done"
         return ToolPlan(name, "monitoring", command, sudo=True, purpose=f"procurar host {host} no Checkmk")
+    if name == "checkmk.diagnose_snmp_address":
+        address = _host(args.get("address"), "address")
+        inner = (
+            f"target_ip={shlex.quote(address)}; found=0; "
+            "for h in $(cmk -l 2>/dev/null); do "
+            "data=$(cmk -D \"$h\" 2>/dev/null || true); "
+            "if printf '%s\\n' \"$data\" | grep -Fq -- \"$target_ip\"; then "
+            "found=1; echo \"MATCHED_HOST=$h ADDRESS=$target_ip\"; "
+            "printf '%s\\n' \"$data\" | grep -E '^(Addresses:|Tags:|Host groups:|Contact groups:|Type of agent:|Agent mode:|SNMP)' || true; "
+            "echo \"CHECK_BEGIN=$h\"; cmk -vvn \"$h\" 2>&1; rc=$?; echo \"CHECK_END=$h RC=$rc\"; "
+            "fi; done; "
+            "[ \"$found\" -eq 1 ] || echo \"NO_CHECKMK_HOST_FOR_ADDRESS=$target_ip\""
+        )
+        command = (
+            "for c in $(docker ps --format '{{.Names}}' 2>/dev/null | grep -Ei 'checkmk|check-mk'); do "
+            "for s in $(docker exec \"$c\" omd sites --bare 2>/dev/null); do "
+            f"echo \"CONTAINER=$c SITE=$s ADDRESS={address}\"; "
+            "docker exec \"$c\" su - \"$s\" -c " + shlex.quote(inner) + "; "
+            "done; done"
+        )
+        return ToolPlan(
+            name,
+            "monitoring",
+            command,
+            sudo=True,
+            timeout=300,
+            purpose=f"localizar o host SNMP {address} nos sites Checkmk e executar cmk -vvn",
+        )
     if name == "checkmk.inspect_agent_socket":
         command = "systemctl show check-mk-agent.socket check_mk.socket xinetd.socket xinetd.service --no-pager -p Id -p LoadState -p ActiveState -p SubState -p UnitFileState 2>/dev/null; ss -lntp 2>/dev/null | grep -E '(:|\\])6556[[:space:]]' || true; timeout 12 bash -c 'exec 3<>/dev/tcp/127.0.0.1/6556; head -n 12 <&3' 2>/dev/null || true"
         return ToolPlan(name, "monitoring", command, sudo=True, timeout=30, purpose="validar socket e resposta do agente Checkmk")

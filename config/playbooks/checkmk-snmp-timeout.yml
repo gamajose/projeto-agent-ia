@@ -1,23 +1,38 @@
 id: checkmk-snmp-timeout
 title: Checkmk - SNMP timeout ou sem resposta
-priority: 90
-profiles: [checkmk, pfsense, fortigate, linux_generic]
+priority: 95
+profiles: [checkmk, oracle_linux, linux_generic, pfsense, fortigate]
 match:
   any:
     - "snmp.*timeout"
     - "no snmp response"
     - "sem resposta.*snmp"
+    - "snmp.*sem resposta"
+    - "problema.*snmp"
+    - "comunica.*snmp"
+    - "snmp.*comunica"
+    - "cannot fetch system description"
     - "porta 161"
+    - "idrac"
 steps:
+  - tool: checkmk.discover
+    purpose: Descobrir os containers Checkmk e os sites OMD antes de consultar o host.
   - tool: network.interfaces
-  - tool: systemd.inspect_unit
-    arguments: {unit: snmpd.service}
-  - tool: systemd.inspect_unit
-    arguments: {unit: bsnmpd.service}
-  - tool: journal.read_unit
-    arguments: {unit: snmpd.service, lines: 100}
-allowed_corrections:
-  - systemd.recover_unit
+    purpose: Confirmar endereços e rotas existentes no servidor de monitoramento.
+  - tool: network.inspect_route
+    requires_context: objective_ip
+    arguments: {host: "{{objective_ip}}"}
+    purpose: Validar a rota utilizada até o equipamento SNMP informado.
+  - tool: network.udp_probe
+    requires_context: objective_ip
+    arguments: {host: "{{objective_ip}}", port: 161}
+    purpose: Testar o alcance UDP/161 a partir do servidor de monitoramento.
+  - tool: checkmk.diagnose_snmp_address
+    requires_context: objective_ip
+    arguments: {address: "{{objective_ip}}"}
+    purpose: Localizar o host pelo IP dentro do site OMD e executar cmk -vvn.
+allowed_corrections: []
 validation:
-  - tool: systemd.inspect_unit
-    arguments: {unit: snmpd.service}
+  - tool: checkmk.diagnose_snmp_address
+    requires_context: objective_ip
+    arguments: {address: "{{objective_ip}}"}

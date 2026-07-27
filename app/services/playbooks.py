@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from contextlib import contextmanager
@@ -12,6 +13,11 @@ from typing import Any, Iterator
 import yaml
 
 from app.core.settings import get_settings
+from app.services.operational_memory import (
+    playbook_effectiveness_bonus,
+    playbook_learning_summary,
+    recommended_playbook_id,
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,14 @@ class Playbook:
 _PLAYBOOK_OVERRIDE: ContextVar[tuple[str, str | None]] = ContextVar(
     "agent_playbook_override",
     default=("auto", None),
+)
+_CURRENT_OBJECTIVE: ContextVar[str] = ContextVar(
+    "agent_playbook_objective",
+    default="",
+)
+_CURRENT_PROFILE: ContextVar[str] = ContextVar(
+    "agent_playbook_profile",
+    default="unknown",
 )
 
 
@@ -141,17 +155,37 @@ def current_playbook_selection() -> tuple[str, str | None]:
 
 
 def select_playbook(objective: str, profile: str) -> Playbook | None:
+    """Seleciona o playbook estático e usa o histórico do banco como reforço.
+
+    As regras declaradas no YAML continuam sendo a fonte principal. O banco apenas
+    desempata playbooks que já tiveram bons resultados e permite recuperar um
+    playbook comprovado quando não existe correspondência textual suficiente.
+    """
+    _CURRENT_OBJECTIVE.set(objective or "")
+    _CURRENT_PROFILE.set(profile or "unknown")
     mode, playbook_id = current_playbook_selection()
     if mode == "none":
         return None
     if mode == "manual":
         return get_playbook(str(playbook_id))
-    scored = sorted(
-        ((playbook.score(objective, profile), playbook) for playbook in load_playbooks()),
-        key=lambda item: item[0],
-        reverse=True,
-    )
-    return scored[0][1] if scored and scored[0][0] >= 0 else None
+
+    scored: list[tuple[int, Playbook]] = []
+    for playbook in load_playbooks():
+        static_score = playbook.score(objective, profile)
+        if static_score >= 0:
+            static_score += playbook_effectiveness_bonus(playbook.id, profile)
+        scored.append((static_score, playbook))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    if scored and scored[0][0] >= 0:
+        return scored[0][1]
+
+    learned_id = recommended_playbook_id(objective, profile)
+    if learned_id:
+        try:
+            return get_playbook(learned_id)
+        except LookupError:
+            return None
+    return None
 
 
 def selected_playbook_ssh_port(objective: str, profile: str = "unknown") -> tuple[int | None, str | None]:
@@ -160,6 +194,18 @@ def selected_playbook_ssh_port(objective: str, profile: str = "unknown") -> tupl
     if not playbook or playbook.ssh_port is None:
         return None, playbook.id if playbook else None
     return playbook.ssh_port, playbook.id
+
+
+def _objective_addresses(objective: str) -> list[str]:
+    addresses: list[str] = []
+    for candidate in re.findall(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])", objective or ""):
+        try:
+            address = str(ipaddress.ip_address(candidate))
+        except ValueError:
+            continue
+        if address not in addresses:
+            addresses.append(address)
+    return addresses
 
 
 def _render(value: Any, context: dict[str, Any]) -> Any:
@@ -178,7 +224,25 @@ def _render(value: Any, context: dict[str, Any]) -> Any:
 def render_steps(playbook: Playbook | None, context: dict[str, Any]) -> list[dict[str, Any]]:
     if not playbook:
         return []
-    return [_render(dict(step), context) for step in playbook.steps]
+
+    render_context = dict(context)
+    addresses = _objective_addresses(_CURRENT_OBJECTIVE.get())
+    render_context.setdefault("objective_ip", addresses[0] if addresses else "")
+    render_context.setdefault("objective_ips", ",".join(addresses))
+
+    rendered: list[dict[str, Any]] = []
+    for source_step in playbook.steps:
+        required_context = source_step.get("requires_context")
+        required_keys = (
+            [str(required_context)]
+            if isinstance(required_context, str)
+            else [str(item) for item in (required_context or [])]
+        )
+        if any(not str(render_context.get(key) or "").strip() for key in required_keys):
+            continue
+        step = {key: value for key, value in source_step.items() if key != "requires_context"}
+        rendered.append(_render(step, render_context))
+    return rendered
 
 
 def playbook_summary(playbook: Playbook | None) -> dict[str, Any] | None:
@@ -191,4 +255,8 @@ def playbook_summary(playbook: Playbook | None) -> dict[str, Any] | None:
         "ssh_port": playbook.ssh_port,
         "allowed_corrections": list(playbook.allowed_corrections),
         "validation": list(playbook.validation_tools),
+        "database_learning": playbook_learning_summary(
+            playbook.id,
+            _CURRENT_PROFILE.get(),
+        ),
     }
